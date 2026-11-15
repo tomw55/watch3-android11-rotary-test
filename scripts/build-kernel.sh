@@ -79,6 +79,23 @@ done
 echo "PASS: all accepted patches applied with zero fuzz."
 echo "0005 (fuel-gauge) intentionally NOT applied -- held pending resolution of its remaining review findings."
 
+echo "== Step 4b: apply CI compiler-compatibility patches (NOT safety-audit patches) =="
+echo "These are evidence-driven source fixes for real GCC build errors seen on"
+echo "GitHub Actions (see README.md 'CI fix log'), kept in a separate"
+echo "patches/ci-compat/ directory so they are never confused with, and never"
+echo "change the count or content of, the independently reviewed safety-audit"
+echo "patch set applied above (0001/0002/0003/0004/0006 accepted, 0005 held)."
+if ls "$HERE"/patches/ci-compat/*.patch >/dev/null 2>&1; then
+    echo "ci-compat set: $(ls "$HERE/patches/ci-compat"/*.patch | xargs -n1 basename | tr '\n' ' ')"
+    for p in "$HERE"/patches/ci-compat/*.patch; do
+        echo "--- applying $(basename "$p") ---"
+        patch --batch --forward --fuzz=0 -p1 < "$p"
+    done
+    echo "PASS: all ci-compat patches applied with zero fuzz."
+else
+    echo "no ci-compat patches present this round."
+fi
+
 echo "== Step 5: record exact toolchain in use =="
 : "${CROSS_COMPILE:=aarch64-linux-gnu-}"
 export CROSS_COMPILE
@@ -123,7 +140,23 @@ JOBS="$(nproc)"
 # base -Werror is set), so this demotes ONLY this one warning class back
 # to non-fatal. It does not touch -Werror generally and does not change a
 # single byte of syscalls.h or any syscall ABI definition.
-IMAGE_KCFLAGS="-Wno-error=attribute-alias"
+#
+# --- Fix 4 (narrowly scoped, evidence in README.md "CI fix log"): GCC 11's
+# -Warray-bounds fires on arch/arm64/include/asm/atomic_ll_sc.h and
+# cmpxchg.h's "+Q" inline-asm memory operand, which always types its
+# target as `*(unsigned long *)ptr` (8 bytes) regardless of the real
+# access width (byte/half/word/doubleword, selected separately by the
+# asm mnemonic's size suffix) -- a conservative dependency hint for the
+# instruction scheduler, not a literal access-width declaration. For a
+# 4-byte atomic_t (e.g. kernel/panic.c's panic_cpu, mm/swap_state.c's
+# swapin_readahead_hits -- the exact two objects GitHub Actions reported
+# against kernel/panic.o and mm/swap_state.o), GCC's object-size tracking
+# sees an 8-byte access claimed against a 4-byte object and flags it,
+# even though the real emitted instruction is a correctly-sized 32-bit
+# ldxr/stxr. Confirmed as a false positive by host-side reproduction
+# using this exact macro chain (see README.md); same KCFLAGS mechanism
+# and same narrow per-warning-class scoping as Fix 1.
+IMAGE_KCFLAGS="-Wno-error=attribute-alias -Wno-error=array-bounds"
 
 set +e
 make -j"$JOBS" ARCH=$ARCH KCFLAGS="$IMAGE_KCFLAGS" Image 2>&1 | tee "$OUT/build-image.log"
