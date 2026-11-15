@@ -16,6 +16,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Install emulator host libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse0
       - name: Boot disposable API 30 guest and check capabilities
         shell: bash
         env:
