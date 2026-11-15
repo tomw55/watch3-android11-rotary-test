@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import subprocess as sp
 import time
+from uuid import uuid4
 
 from importlib.util import module_from_spec, spec_from_file_location
 
@@ -42,11 +43,29 @@ def app_log():
     return adb("logcat", "-d", "-v", "threadtime", "-s", "Watch3Rotary:I", "*:S")
 
 
+def case_log(log, marker):
+    """Return the marker and subsequent records, or None if the barrier is missing."""
+    lines = log.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.rstrip("\r\n").endswith(f" Watch3Rotary: {marker}"):
+            return "".join(lines[index:])
+    return None
+
+
 def exercise(generator, node, device_id, label, wheel, hall):
     expected = ([("REL_WHEEL", wheel)] if wheel else []) + [
         ("REL_X", hall), ("SYN_REPORT", 0)
     ]
-    adb("logcat", "-c")
+    # Confirm a unique marker in the same log stream before sending the frame.
+    marker = f"ROTARY_CASE_{label}_{uuid4().hex}"
+    adb("shell", "log", "-p", "i", "-t", "Watch3Rotary", marker)
+    poll(f"{label} log marker", lambda: case_log(app_log(), marker), timeout=5)
+
+    def read_case_log():
+        log = case_log(app_log(), marker)
+        if log is None:
+            raise RuntimeError(f"{label}: logcat case marker disappeared: {marker}")
+        return log
     collector = sp.Popen(adb_args("shell", "getevent", "-lt", "-c", str(len(expected)), node),
                          stdout=sp.PIPE, stderr=sp.STDOUT, text=True)
     try:
@@ -64,12 +83,12 @@ def exercise(generator, node, device_id, label, wheel, hall):
             save(f"{label}-getevent.txt", raw)
     try:
         if wheel:
-            poll(f"{label} rotary delivery", lambda: wheel_events(app_log(), device_id), timeout=8)
+            poll(f"{label} rotary delivery", lambda: wheel_events(read_case_log(), device_id), timeout=8)
             time.sleep(.5)
         else:
             time.sleep(2)
     finally:
-        log = app_log()
+        log = read_case_log()
         save(f"{label}-app.txt", log)
     wanted = [("fixture", "true", "true", 0, float(wheel))] if wheel else []
     seen = wheel_events(log, device_id)
