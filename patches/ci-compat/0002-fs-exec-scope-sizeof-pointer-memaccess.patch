@@ -1,0 +1,57 @@
+# ci-compat patch -- NOT a safety-audit patch.
+#
+# Category: compiler-compatibility source fix, evidence-driven, added in
+# response to GCC 11.4.0 -Werror=sizeof-pointer-memaccess on fs/exec.o
+# (fs/exec.c:1246) from GitHub Actions run 43767302885.
+#
+# get_task_comm() copies tsk->comm (a real, fixed TASK_COMM_LEN-byte
+# array -- include/linux/sched.h) into a caller-supplied buffer using
+# strncpy(buf, tsk->comm, sizeof(tsk->comm)). sizeof(tsk->comm) is
+# correct and intended here: every caller of get_task_comm() in this
+# tree sizes its buffer with sizeof(...->comm) or TASK_COMM_LEN to match
+# the function's documented contract ("buf must be at least
+# sizeof(tsk->comm) in size"). This is NOT the "sizeof(a pointer)"
+# mistake the warning is designed to catch -- GCC 11's heuristic simply
+# cannot see the caller-side contract and flags this decades-old,
+# unchanged kernel idiom anyway.
+#
+# Fix: scope the suppression to this one function only with
+# #pragma GCC diagnostic push/ignored/pop, confirmed (see README.md "CI
+# fix log") to leave -Werror=sizeof-pointer-memaccess fully live for
+# every other call in the kernel, including a real sizeof(pointer) bug
+# in a different function in the same file.
+#
+# See the main README.md "CI fix log" section for full evidence.
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1239,14 +1239,29 @@
+ 	return -EAGAIN;
+ }
+ 
++/*
++ * buf must be at least sizeof(tsk->comm) in size. tsk->comm is a fixed
++ * TASK_COMM_LEN-byte array (include/linux/sched.h), not a pointer, so
++ * sizeof(tsk->comm) is the correct, intended copy length -- every
++ * caller of get_task_comm() in this tree sizes its buffer with
++ * sizeof(...->comm) or TASK_COMM_LEN to match this documented contract.
++ * GCC 11's -Wsizeof-pointer-memaccess heuristic ("did you mean the
++ * destination size?") cannot see that contract and flags this
++ * decades-old, otherwise-unchanged kernel idiom. Scoped to this one
++ * function only, so -Werror stays fully live for every other
++ * sizeof(pointer) call in the kernel, including real bugs of this
++ * exact warning class elsewhere.
++ */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wsizeof-pointer-memaccess"
+ char *get_task_comm(char *buf, struct task_struct *tsk)
+ {
+-	/* buf must be at least sizeof(tsk->comm) in size */
+ 	task_lock(tsk);
+ 	strncpy(buf, tsk->comm, sizeof(tsk->comm));
+ 	task_unlock(tsk);
+ 	return buf;
+ }
++#pragma GCC diagnostic pop
+ EXPORT_SYMBOL_GPL(get_task_comm);
+ 
+ /*

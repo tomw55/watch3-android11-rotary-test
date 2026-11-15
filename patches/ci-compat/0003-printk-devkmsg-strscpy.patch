@@ -1,0 +1,56 @@
+# ci-compat patch -- NOT a safety-audit patch.
+#
+# Category: compiler-compatibility source fix, evidence-driven, added in
+# response to GCC 11.4.0 -Werror=stringop-truncation on kernel/printk/printk.o
+# (kernel/printk/printk.c:137 and :140) from GitHub Actions run 43767302885.
+#
+# control_devkmsg() memsets the full devkmsg_log_str[DEVKMSG_STR_MAX_SIZE]
+# (10 bytes) buffer to zero, then strncpy()s "on" (2 bytes) or "off"
+# (3 bytes) into it. Because strncpy()'s length argument exactly equals
+# strlen(src), strncpy() itself appends no NUL -- but the immediately
+# preceding memset() already zeroed the whole buffer, so the byte right
+# after the copied string is already 0, and the result is genuinely,
+# correctly NUL-terminated. This is NOT a real truncation bug -- GCC's
+# -Wstringop-truncation cannot see across the preceding memset()
+# statement and flags it anyway.
+#
+# Fix: replace strncpy() with strscpy(), which lib/string.c's own
+# documentation names as the preferred replacement for precisely this
+# "memset the tail, then copy" idiom ("doesn't unnecessarily force the
+# tail of the destination buffer to be zeroed. If the zeroing is
+# desired, it's likely cleaner to use strscpy() ... then just memset()
+# the tail of the dest buffer" -- lib/string.c). strscpy() always
+# NUL-terminates and is declared __must_check, so its result is checked
+# with WARN_ON(), matching this tree's own existing strscpy() call sites
+# (arch/tile/gxio/mpipe.c, fs/orangefs/orangefs-utils.c,
+# drivers/isdn/i4l/isdn_net.c all check strscpy()'s return value rather
+# than discarding it). Truncation cannot occur here in practice
+# (DEVKMSG_STR_MAX_SIZE=10 is larger than strlen("on")/strlen("off")),
+# so WARN_ON() simply makes that guarantee explicit instead of silently
+# discarding a __must_check return value.
+#
+# See the main README.md "CI fix log" section for full evidence.
+--- a/kernel/printk/printk.c
++++ b/kernel/printk/printk.c
+@@ -134,10 +134,19 @@
+ 	 */
+ 	if (devkmsg_log == DEVKMSG_LOG_MASK_ON) {
+ 		memset(devkmsg_log_str, 0, DEVKMSG_STR_MAX_SIZE);
+-		strncpy(devkmsg_log_str, "on", 2);
++		/*
++		 * strscpy() always NUL-terminates and takes the real
++		 * destination size (lib/string.c documents this exact
++		 * "memset the tail, then strscpy" idiom as its preferred
++		 * replacement for strncpy()). Truncation cannot occur
++		 * here (DEVKMSG_STR_MAX_SIZE=10 > strlen("on")); WARN_ON
++		 * makes that explicit instead of discarding the
++		 * __must_check return value.
++		 */
++		WARN_ON(strscpy(devkmsg_log_str, "on", DEVKMSG_STR_MAX_SIZE) < 0);
+ 	} else if (devkmsg_log == DEVKMSG_LOG_MASK_OFF) {
+ 		memset(devkmsg_log_str, 0, DEVKMSG_STR_MAX_SIZE);
+-		strncpy(devkmsg_log_str, "off", 3);
++		WARN_ON(strscpy(devkmsg_log_str, "off", DEVKMSG_STR_MAX_SIZE) < 0);
+ 	}
+ 	/* else "ratelimit" which is set by default. */
+ 
