@@ -1,0 +1,50 @@
+--- a/drivers/input/misc/Kconfig	2026-11-15 18:03:24.067104897 +0000
++++ b/drivers/input/misc/Kconfig	2026-11-15 18:03:31.516624566 +0000
+@@ -856,6 +856,21 @@
+           To compile this driver as a module, choose M here: the
+           module will be called tizen_detent
+ 
++config INPUT_TIZEN_BEZEL_NOBLESSE_AUDIT
++	bool "Exclude operational tizen_bezel driver from Noblesse audit build"
++	depends on NOBLESSE && INPUT_TIZEN_BEZEL
++	default n
++	help
++	  Prevent tizen_bezel.o from being compiled at all. The driver's
++	  probe path calls regulator_enable() on vdd_ldo25, which is the
++	  actual power supply for the three Hall-effect sensor GPIOs
++	  (gpa0 2/3/4), not a redundant parallel write like the PMIC
++	  BUCK4/LDO31 selectors. Narrowly skipping just the enable call
++	  would leave GPIO IRQ handling live against a floating/undefined
++	  supply rail, which is worse than not compiling the driver.
++	  This option is intended for offline auditing only; it does not
++	  change driver behaviour on any board where it is left disabled.
++
+ config INPUT_ASSISTANT
+         default n
+         bool "Enable input assistant support"
+--- a/drivers/input/misc/Makefile	2026-11-15 18:03:24.068962451 +0000
++++ b/drivers/input/misc/Makefile	2026-11-15 18:03:34.816624762 +0000
+@@ -80,7 +80,9 @@
+ obj-$(CONFIG_INPUT_XEN_KBDDEV_FRONTEND)	+= xen-kbdfront.o
+ obj-$(CONFIG_INPUT_YEALINK)		+= yealink.o
+ obj-$(CONFIG_INPUT_IDEAPAD_SLIDEBAR)	+= ideapad_slidebar.o
++ifneq ($(CONFIG_INPUT_TIZEN_BEZEL_NOBLESSE_AUDIT),y)
+ obj-$(CONFIG_INPUT_TIZEN_BEZEL)         += tizen_bezel.o
++endif
+ obj-$(CONFIG_INPUT_ASSISTANT)   += input_assistant.o
+ obj-$(CONFIG_INPUT_SECBRIDGE)   += sec-input-bridge.o
+ obj-$(CONFIG_INPUT_SEC_AUTO_INPUT)   += sec_auto_input.o
+--- a/drivers/input/misc/tizen_bezel.c	2026-11-15 18:03:24.070582102 +0000
++++ b/drivers/input/misc/tizen_bezel.c	2026-11-15 18:03:37.884624945 +0000
+@@ -27,6 +27,11 @@
+ #include <linux/input.h>
+ #include <linux/input/tizen_bezel.h>
+ #include <linux/trm.h>
++
++#ifdef CONFIG_INPUT_TIZEN_BEZEL_NOBLESSE_AUDIT
++#error "Noblesse audit must not compile the operational tizen_bezel driver"
++#endif
++
+ #ifdef CONFIG_SLEEP_MONITOR
+ #include <linux/power/sleep_monitor.h>
+ #endif

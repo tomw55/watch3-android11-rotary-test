@@ -1,0 +1,119 @@
+name: Watch3 SM-R840 kernel build (offline-safe, cross-compile only)
+
+# This workflow cross-compiles the pinned Samsung Exynos9110 "Noblesse"
+# (Tizen Linux 4.9.59) kernel source for the Galaxy Watch3 SM-R840
+# (NOBLESSE-LARGE-BT, board revision r08) using a standard GitHub-hosted
+# runner. It verifies the source hash before building, applies only the
+# independently accepted safety patches (0005 is explicitly held out),
+# and uploads build logs/config/artifacts with their SHA-256 hashes.
+#
+# What this workflow explicitly does NOT do:
+#   - it does not include, fetch, or embed any proprietary Samsung
+#     firmware or signing material;
+#   - it does not produce a flashable boot.img, Odin package, or any
+#     Samsung-specific signed/packaged boot blob (the dtbtool/mkdzimage
+#     host tools Samsung's own release process uses for that are not
+#     present in the public GPL source and are not reproduced here);
+#   - it never touches, probes, or communicates with a physical device;
+#   - a green run here means "this source compiles for this target
+#     with this toolchain" -- it is NOT a boot test and must never be
+#     read as one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_src_url:
+        description: >
+          URL to download the pinned kernel_samsung_galileo-master.zip
+          from (e.g. a Release asset in this repo, or wherever you have
+          already hosted the hash-verified source). Leave blank to use
+          the KERNEL_SRC_URL repository variable instead.
+        required: false
+  push:
+    branches: [ main ]
+    paths:
+      - 'patches/**'
+      - 'scripts/**'
+      - '.github/workflows/kernel-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      KERNEL_SRC_URL: ${{ github.event.inputs.kernel_src_url || vars.KERNEL_SRC_URL }}
+    steps:
+      - name: Checkout this repository (patches, scripts, workflow only)
+        uses: actions/checkout@v4
+
+      - name: Fail fast with a clear message if no source location is configured
+        if: ${{ env.KERNEL_SRC_URL == '' }}
+        run: |
+          echo "::error::KERNEL_SRC_URL is not set. Set the repository" \
+               "variable KERNEL_SRC_URL (Settings > Secrets and variables" \
+               "> Actions > Variables) to point at the pinned," \
+               "hash-verified kernel_samsung_galileo-master.zip, or pass" \
+               "kernel_src_url when running this workflow manually. This" \
+               "workflow will not guess at or substitute a different" \
+               "kernel source."
+          exit 1
+
+      - name: Install the aarch64 cross-toolchain and host build dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          # Prefer an older cross-gcc closer to what a Linux 4.9-era
+          # Android/Tizen tree expects; fall back to whatever aarch64
+          # cross-gcc the runner image offers if that package is gone.
+          if apt-cache show gcc-8-aarch64-linux-gnu >/dev/null 2>&1; then
+            sudo apt-get install -y gcc-8-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            echo "CROSS_COMPILE_BIN=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+            # Make the gcc-8 binary resolvable under the expected gcc name.
+            sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-8 100
+          else
+            echo "::warning::gcc-8-aarch64-linux-gnu unavailable on this runner image; falling back to gcc-aarch64-linux-gnu (version logged below, may differ from what this 2017-era kernel tree expects)."
+            sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            echo "CROSS_COMPILE_BIN=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+          fi
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev dwarves u-boot-tools device-tree-compiler
+          aarch64-linux-gnu-gcc --version
+
+      - name: Build
+        env:
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: |
+          chmod +x scripts/build-kernel.sh
+          ./scripts/build-kernel.sh
+
+      - name: Record job summary (compiled vs. boot-tested distinction)
+        if: always()
+        run: |
+          {
+            echo "## Watch3 SM-R840 kernel build"
+            echo
+            if [ -f build-out/exit-codes.txt ]; then
+              echo '```'
+              cat build-out/exit-codes.txt
+              echo '```'
+            fi
+            echo
+            echo "**Compiled:** see exit codes above and the uploaded"
+            echo "\`build-*.log\` files for the full, real build output."
+            echo
+            echo "**Boot-tested: NOT RUN.** This workflow performs no boot,"
+            echo "no emulation, no flashing, and no physical-device contact."
+            echo "A successful compile here says nothing about whether this"
+            echo "Image/DTB boots. SM-R840 remains strictly NO-GO."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build evidence and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch3-r840-kernel-build-${{ github.run_id }}
+          path: |
+            build-out/**
+          if-no-files-found: warn
+          retention-days: 90

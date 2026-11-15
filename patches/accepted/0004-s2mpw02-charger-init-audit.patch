@@ -1,0 +1,39 @@
+--- a/drivers/power/Kconfig
++++ b/drivers/power/Kconfig
+@@ -520,6 +520,18 @@
+ 	  Say Y here to enable support for the Samsung S2MPW02
+ 	  battery charger can supoprt PMIC, Audio Codec, Fuel-gauge.
+ 
++config CHARGER_S2MPW02_NOBLESSE_AUDIT
++	bool "Skip unconditional S2MPW02 charger init writes"
++	depends on NOBLESSE && CHARGER_S2MPW02
++	default n
++	help
++	  Skip the seven unconditional register writes in
++	  s2mpw02_chg_init() (top-off debounce, top-off timer
++	  disable, watchdog disable, manual reset enable, RID
++	  debounce, recharge-forced-off/Vmin). Charger registration,
++	  IRQ handling and all other charger paths can still write
++	  registers. This option is intended for offline auditing.
++
+ config S2MPW02_RID_DETECT
+ 	tristate "S2MPW02 RID detect feature"
+ 	default n
+--- a/drivers/power/s2mpw02_charger.c
++++ b/drivers/power/s2mpw02_charger.c
+@@ -526,6 +526,7 @@
+ 	/* Factory_mode initialization */
+ 	charger->factory_mode = false;
+ 
++#ifndef CONFIG_CHARGER_S2MPW02_NOBLESSE_AUDIT
+ 	if (charger->dev_id < EVT_1) {
+ 		/* change Top-off detection debounce time to max 0x25[3:2]=11 */
+ 		s2mpw02_write_reg(charger->client, S2MPW02_CHG_REG_CHG_OTP4, 0x3D);
+@@ -555,6 +556,7 @@
+ 
+ 	/* Recharge Forced off Enable & set V_min */
+ 	s2mpw02_update_reg(charger->client, S2MPW02_CHG_REG_CTRL4, 0xD0, 0xF0);
++#endif
+ 
+ 	return true;
+ }

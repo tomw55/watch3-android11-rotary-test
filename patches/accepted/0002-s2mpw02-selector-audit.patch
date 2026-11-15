@@ -1,0 +1,36 @@
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -716,6 +716,16 @@
+ 	 via I2C bus. S2MPW02 is comprised of high efficient Buck converters
+ 	 including Buck-Boost converter, various LDOs.
+ 
++config REGULATOR_S2MPW02_SELECTOR_AUDIT
++	bool "Omit three hard-coded S2MPW02 regulator probe writes"
++	depends on NOBLESSE && REGULATOR_S2MPW02
++	default n
++	help
++	  Skip the unconditional BUCK4 output and LDO31 DVS selectors in
++	  the regulator probe. Regulator registration, other regulator
++	  operations and all other PMIC children can still write registers.
++	  This option is intended for offline auditing.
++
+ config REGULATOR_S2MPB02
+ 	tristate "Samsung S2MPB02 regulator"
+ 	depends on MFD_S2MPB02
+--- a/drivers/regulator/s2mpw02-regulator.c
++++ b/drivers/regulator/s2mpw02-regulator.c
+@@ -629,12 +629,14 @@
+ 		}
+ 	}
+ 
++#ifndef CONFIG_REGULATOR_S2MPW02_SELECTOR_AUDIT
+ 	/* change BUCK4 voltage level 0.75V, 0.65V */
+ 	s2mpw02_write_reg(s2mpw02->i2c, S2MPW02_PMIC_REG_B4OUT1, 0x38);
+ 	s2mpw02_write_reg(s2mpw02->i2c, S2MPW02_PMIC_REG_B4OUT2, 0x28);
+ 
+ 	/* set LDO31 DVS voltage to 0.575V */
+ 	s2mpw02_write_reg(s2mpw02->i2c, S2MPW02_PMIC_REG_L31CTRL2, 0x07);
++#endif
+ 
+ 	s2mpw02->num_regulators = pdata->num_regulators;
+ 	return 0;

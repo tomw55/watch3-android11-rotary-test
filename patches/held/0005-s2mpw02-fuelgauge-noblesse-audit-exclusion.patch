@@ -1,0 +1,110 @@
+--- a/drivers/power/Kconfig
++++ b/drivers/power/Kconfig
+@@ -536,6 +536,46 @@
+ 	help
+ 	 Say Y to enable support for the Samsung S2MPW02 Fuelgauge
+ 
++config FUELGAUGE_S2MPW02_NOBLESSE_AUDIT
++	bool "Exclude operational S2MPW02 fuelgauge driver from Noblesse audit build"
++	depends on NOBLESSE && FUELGAUGE_S2MPW02
++	default n
++	help
++	  Prevent s2mpw02_fuelgauge.o from being compiled at all.
++
++	  Investigation (drivers/power/Kconfig and drivers/power/Makefile)
++	  confirms FUELGAUGE_S2MPW02 gates exactly one obj-y/obj-m line and
++	  nothing else in this tree calls into this driver's probe,
++	  power-supply, alert or IRQ-handling symbols: the parent MFD core
++	  (drivers/mfd/s2mpw02_core.c) creates both the "s2mpw02-fuelgauge"
++	  platform-device cell and the raw fuelgauge I2C dummy client
++	  unconditionally and independently of whether this driver is
++	  compiled, and no charger or other power-supply-framework code
++	  references this driver's symbols. Excluding the whole translation
++	  unit therefore leaves that platform-device cell simply unbound
++	  (no matching driver), which is safe, and gives audit builds a
++	  stronger guarantee than guarding individual writes: no gauge
++	  power supply, callback, alert, or IRQ handler is ever registered,
++	  so none of them can later perform I2C gauge traffic without
++	  established interface readiness -- the probe body that would
++	  need to reason about that never runs at all in this mode.
++
++	  This differs from an unconditional writes-only guard because the
++	  defects under review are not limited to one write: a failed
++	  interface-enable write/read can be followed by SOC reads, dynamic
++	  scaling, power-supply registration, and alert/IRQ setup that all
++	  assume readiness the probe never actually established. Excluding
++	  the whole driver removes that entire class of defect from audit
++	  builds at once, rather than requiring every such path to be
++	  identified and guarded individually.
++
++	  This option is intended for offline auditing only; it does not
++	  change driver behaviour on any board where it is left disabled.
++	  See s2mpw02_fuelgauge.c for the separate correctness fix applied
++	  to the normal (non-audit) probe path's INTM write-enable, which
++	  this exclusion option does not affect since that code never
++	  compiles when this option is enabled.
++
+ config BATTERY_S2MU00X
+ 	tristate "S2MU00X battery driver"
+ 	depends on (MFD_S2MPW02) && I2C
+--- a/drivers/power/Makefile
++++ b/drivers/power/Makefile
+@@ -75,7 +75,9 @@
+ obj-$(CONFIG_AXP288_CHARGER)	+= axp288_charger.o
+ 
+ obj-$(CONFIG_CHARGER_S2MPW02)   += s2mpw02_charger.o
++ifneq ($(CONFIG_FUELGAUGE_S2MPW02_NOBLESSE_AUDIT),y)
+ obj-$(CONFIG_FUELGAUGE_S2MPW02)		+= s2mpw02_fuelgauge.o
++endif
+ 
+ obj-$(CONFIG_IRQ_HISTORY) += irq_history.o
+ obj-$(CONFIG_WS_HISTORY) += ws_history.o
+--- a/drivers/power/s2mpw02_fuelgauge.c
++++ b/drivers/power/s2mpw02_fuelgauge.c
+@@ -21,6 +21,10 @@
+ #include <linux/mfd/samsung/rtc-s2mp.h>
+ #include <linux/wakelock.h>
+ 
++#ifdef CONFIG_FUELGAUGE_S2MPW02_NOBLESSE_AUDIT
++#error "Noblesse audit must not compile the operational S2MPW02 fuelgauge driver"
++#endif
++
+ static enum power_supply_property s2mpw02_fuelgauge_props[] = {
+ 	POWER_SUPPLY_PROP_STATUS,
+ 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+@@ -1452,9 +1456,33 @@
+ 
+ 	/* fuelgauge i2c write enable */
+ 	// will be moved to bootloader
+-	s2mpw02_fg_read_reg_byte(fuelgauge->i2c, S2MPW02_FG_REG_INTM, &temp);
++	//
++	// Both the read and the write (the write already retries internally
++	// up to 3 additional times inside s2mpw02_fg_write_reg_byte()) must
++	// succeed before this probe treats the fuel-gauge I2C interface as
++	// enabled. If either fails, the probe aborts here: it must not fall
++	// through to raw SOC reads, dynamic-scale calculation, power-supply
++	// registration, or alert/IRQ setup while believing an interface that
++	// was never actually established is ready -- none of that code can
++	// run without readiness once this check gates it.
++	ret = s2mpw02_fg_read_reg_byte(fuelgauge->i2c, S2MPW02_FG_REG_INTM, &temp);
++	if (ret < 0) {
++		dev_err(&pdev->dev,
++			"%s: Failed to read INTM(%d); fuel-gauge interface not confirmed ready, aborting probe\n",
++			__func__, ret);
++		ret = -ENODEV;
++		goto err_parse_dt_nomem;
++	}
++
+ 	temp |= FG_IF_EN_MASK;
+-	s2mpw02_fg_write_reg_byte(fuelgauge->i2c, S2MPW02_FG_REG_INTM, temp);
++	ret = s2mpw02_fg_write_reg_byte(fuelgauge->i2c, S2MPW02_FG_REG_INTM, temp);
++	if (ret < 0) {
++		dev_err(&pdev->dev,
++			"%s: Failed to write INTM(%d); fuel-gauge interface not confirmed ready, aborting probe\n",
++			__func__, ret);
++		ret = -ENODEV;
++		goto err_parse_dt_nomem;
++	}
+ 
+ 	fuelgauge->pdata = devm_kzalloc(&pdev->dev, sizeof(*(fuelgauge->pdata)),
+ 			GFP_KERNEL);
