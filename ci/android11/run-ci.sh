@@ -27,8 +27,12 @@ finish() {
         kill "$emu_pid" 2>/dev/null
     fi
     if ((rc != 0)); then
+        if [[ $stage == rotary_* && $(head -c 7 evidence/rotary-result.txt) == 'NOT RUN' ]]; then
+            printf 'FAIL stage=%s; see runner.log and diagnostics\n' "$stage" > evidence/rotary-result.txt
+        fi
         case "$stage" in
             host_preflight|sdk_install|boot) printf 'FAIL stage=%s\n' "$stage" > evidence/boot-result.txt ;;
+            rotary_*) ;;
             *) printf 'FAIL stage=%s; see runner.log and guest diagnostics\n' "$stage" > evidence/input-feasibility.txt ;;
         esac
     fi
@@ -37,7 +41,7 @@ finish() {
 trap finish EXIT
 die() { echo "FAIL [$stage] $*" >&2; exit 1; }
 
-printf 'NOT RUN — no app install or event injection in this workflow\n' > evidence/rotary-result.txt
+printf 'NOT RUN\n' > evidence/rotary-result.txt
 printf 'NOT RUN\n' > evidence/boot-result.txt
 printf 'NOT RUN\n' > evidence/input-feasibility.txt
 uname -a
@@ -123,4 +127,32 @@ stage=guest_uinput_idc_selection
 python3 check-discovery.py
 printf '%s\n' 'PASS prerequisites: root, enforcing SELinux, uinput open/create, exact IDC selected, both mappers visible.' \
     'Full focused-app rotary delivery is NOT RUN.' > evidence/input-feasibility.txt
+if [[ ${CHECK_ROTARY:-false} == true ]]; then
+    stage=rotary_build
+    sha256sum -c rotary-sources.sha256
+    sdkmanager --install 'platforms;android-30' 'build-tools;33.0.2'
+    sdkmanager --list_installed > evidence/sdk-installed.txt
+    javac -version
+    ANDROID_JAR="$sdk/platforms/android-30/android.jar" BUILD_TOOLS="$sdk/build-tools/33.0.2" \
+        sh rotary/app/build-apk.sh > evidence/rotary-apk-build.log 2>&1
+    cp rotary/app/out/RotaryGuestView.apk evidence/RotaryGuestView.apk
+    (cd evidence && sha256sum RotaryGuestView.apk > RotaryGuestView.apk.sha256)
+    "$ndk/x86_64-linux-android30-clang" -std=c11 -Wall -Wextra -Werror -O2 \
+        rotary/rotary-uinput.c -o rotary-uinput-ci
+    file rotary-uinput-ci > evidence/rotary-generator-abi.txt
+    sha256sum rotary-uinput-ci > evidence/rotary-generator.sha256
+
+    stage=rotary_install
+    adb_ci install evidence/RotaryGuestView.apk
+    adb_ci push rotary-uinput-ci /data/local/tmp/rotary-uinput-ci
+    adb_ci shell chmod 0755 /data/local/tmp/rotary-uinput-ci
+    adb_ci shell input keyevent KEYCODE_WAKEUP
+    adb_ci shell wm dismiss-keyguard
+    adb_ci shell settings put system accelerometer_rotation 0
+    adb_ci shell settings put system user_rotation 0
+    adb_ci shell am start -W -n org.watch3.rotary/.MainActivity
+
+    stage=rotary_events
+    python3 test-delivery.py
+fi
 stage=complete

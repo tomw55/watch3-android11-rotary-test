@@ -1,3 +1,5 @@
 /evidence/
 /uinput-probe
 /__pycache__/
+/rotary/app/out/
+/rotary-uinput-ci
