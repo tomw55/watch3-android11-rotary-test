@@ -1,0 +1,47 @@
+--- a/drivers/input/touchscreen/zxt_ztm620_ts_noblesse.c
++++ b/drivers/input/touchscreen/zxt_ztm620_ts_noblesse.c
+@@ -4020,7 +4020,7 @@
+ 
+ 	set_default_result(finfo);
+ 
+-	memset(raw_data->sfr_hgap_data, 0x00, TSP_CMD_NODE_NUM);
++	memset(raw_data->sfr_hgap_data, 0x00, sizeof(raw_data->sfr_hgap_data));
+ 
+ 	dev_info(&client->dev, "%s:SFR H Gap start\n", __func__);
+ 
+@@ -4471,7 +4471,7 @@
+ 	u16 touchkey_max = 0x0000;
+ 	set_default_result(finfo);
+ 
+-	memset(raw_data->vgap_data, 0x00, TSP_CMD_NODE_NUM);
++	memset(raw_data->vgap_data, 0x00, sizeof(raw_data->vgap_data));
+ 
+ 	dev_info(&client->dev, "%s:DND V Gap start\n", __func__);
+ 
+@@ -4526,7 +4526,7 @@
+ 	u16 touchkey_max = 0x0000;
+ 	set_default_result(finfo);
+ 
+-	memset(raw_data->hgap_data, 0x00, TSP_CMD_NODE_NUM);
++	memset(raw_data->hgap_data, 0x00, sizeof(raw_data->hgap_data));
+ 
+ 	dev_info(&client->dev, "%s:DND H Gap start\n", __func__);
+ 
+@@ -4772,7 +4772,7 @@
+ 
+ 	set_default_result(finfo);
+ 
+-	memset(raw_data->hfvgap_data, 0x00, TSP_CMD_NODE_NUM);
++	memset(raw_data->hfvgap_data, 0x00, sizeof(raw_data->hfvgap_data));
+ 
+ 	dev_info(&client->dev, "%s:HFDND V Gap start\n", __func__);
+ 
+@@ -4857,7 +4857,7 @@
+ 
+ 	set_default_result(finfo);
+ 
+-	memset(raw_data->hgap_data, 0x00, TSP_CMD_NODE_NUM);
++	memset(raw_data->hgap_data, 0x00, sizeof(raw_data->hgap_data));
+ 
+ 	dev_info(&client->dev, "%s:HFDND H Gap start\n", __func__);
+ 

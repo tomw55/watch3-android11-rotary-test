@@ -1,0 +1,14 @@
+--- a/sound/soc/codecs/codec_speedy.c
++++ b/sound/soc/codecs/codec_speedy.c
+@@ -317,9 +317,8 @@
+ 	memset(reg_dump, 0, sizeof(reg_dump));
+ 	if (g_command == COMMAND_DUMP) {
+ 
+-		strncpy(reg_dump,
+-				ADDR_INDEX_STRING,
+-				sizeof(ADDR_INDEX_STRING));
++		BUILD_BUG_ON(sizeof(ADDR_INDEX_STRING) > sizeof(reg_dump));
++		memcpy(reg_dump, ADDR_INDEX_STRING, sizeof(ADDR_INDEX_STRING));
+ 
+ 		/* register addresses 0x00 ~ 0xFF(255) */
+ 		for (i = 0; i <= 255; i++) {

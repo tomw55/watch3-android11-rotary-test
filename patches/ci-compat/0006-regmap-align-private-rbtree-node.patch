@@ -1,0 +1,11 @@
+--- a/drivers/base/regmap/regcache-rbtree.c
++++ b/drivers/base/regmap/regcache-rbtree.c
+@@ -33,7 +33,7 @@
+ 	unsigned int blklen;
+ 	/* the actual rbtree node holding this block */
+ 	struct rb_node node;
+-} __attribute__ ((packed));
++};
+ 
+ struct regcache_rbtree_ctx {
+ 	struct rb_root root;

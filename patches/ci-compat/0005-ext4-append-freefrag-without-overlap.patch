@@ -1,0 +1,29 @@
+--- a/fs/ext4/mballoc.c
++++ b/fs/ext4/mballoc.c
+@@ -2361,6 +2361,7 @@
+ #define EXT4_FREEFRAG_COLUMN 14 /* sb->s_blocksize_bits + 2 */
+ 	ext4_group_t group = 0;
+ 	int i;
++	size_t len = 0;
+ 	ext4_fsblk_t freeblock[EXT4_FREEFRAG_COLUMN] = {0,};
+ 	char *size[EXT4_FREEFRAG_COLUMN] = {"4K","8K","16K","32K","64K",
+ 		"128K","256K","512K","1M","2M","4M","8M","16M","32M"};
+@@ -2397,12 +2398,12 @@
+ 					sg.info.bb_counters[i]: 0;
+ 	}
+ out:
+-	for (i=0; i < EXT4_FREEFRAG_COLUMN; i++)
+-		snprintf(buf, PAGE_SIZE, "%s\"%s\":\"%llu\",", buf, size[i],
+-			(unsigned long long)freeblock[i]);
+-	buf[strlen(buf)-1] = '\n';
+-
+-	return strlen(buf);
++	for (i = 0; i < EXT4_FREEFRAG_COLUMN; i++)
++		len += scnprintf(buf + len, PAGE_SIZE - len,
++				"\"%s\":\"%llu\"%c", size[i],
++				(unsigned long long)freeblock[i],
++				i == EXT4_FREEFRAG_COLUMN - 1 ? '\n' : ',');
++	return len;
+ }
+ 
+ static struct kmem_cache *get_groupinfo_cache(int blocksize_bits)

@@ -1,0 +1,17 @@
+--- a/drivers/net/wireless/broadcom/bcmdhd_101_10/dhd_rtt.c
++++ b/drivers/net/wireless/broadcom/bcmdhd_101_10/dhd_rtt.c
+@@ -1359,10 +1359,10 @@
+ dhd_rtt_get_version(dhd_pub_t *dhd, int *out_version)
+ {
+ 	int ret;
+-	ftm_subcmd_info_t subcmd_info;
+-	subcmd_info.name = "ver";
+-	subcmd_info.cmdid = WL_PROXD_CMD_GET_VERSION;
+-	subcmd_info.handler = NULL;
++	ftm_subcmd_info_t subcmd_info = {
++		.name = "ver",
++		.cmdid = WL_PROXD_CMD_GET_VERSION,
++	};
+ 	ret = dhd_rtt_common_get_handler(dhd, &subcmd_info,
+ 			WL_PROXD_METHOD_FTM, WL_PROXD_SESSION_ID_GLOBAL);
+ 	*out_version = (ret == BCME_OK) ? subcmd_info.version : 0;

@@ -1,0 +1,44 @@
+--- a/kernel/swap/modules/parser/msg_buf.c
++++ b/kernel/swap/modules/parser/msg_buf.c
+@@ -31,6 +31,7 @@
+ 
+ #include <linux/slab.h>
+ #include <linux/vmalloc.h>
++#include <asm/unaligned.h>
+ #include "msg_buf.h"
+ #include "parser_defs.h"
+ 
+@@ -166,7 +167,7 @@
+ 	if (cmp_mb(mb, sizeof(*val)) < 0)
+ 		return -EINVAL;
+ 
+-	*val = *((u64 *)mb->ptr);
++	*val = get_unaligned((const u64 *)mb->ptr);
+ 	mb->ptr += sizeof(*val);
+ 	print_parse_debug("u64->%llu; 0x%016llX\n", *val, *val);
+ 
+--- a/kernel/swap/modules/parser/msg_parser.c
++++ b/kernel/swap/modules/parser/msg_parser.c
+@@ -511,6 +511,8 @@
+ 		}
+ 
+ 		for (i = 0; i != steps_count; i++) {
++			u64 data_offset;
++
+ 			print_parse_debug("steps #%d ptr_order:", i);
+ 			if (get_u8(mb, &(steps[i].ptr_order))) {
+ 				print_err("failed to read pointer order(step #%d)\n",
+@@ -518,11 +520,12 @@
+ 				goto free_steps;
+ 			}
+ 			print_parse_debug("steps #%d data_offset:", i);
+-			if (get_u64(mb, &(steps[i].data_offset))){
++			if (get_u64(mb, &data_offset)) {
+ 				print_err("failed to read offset (steps #%d)\n",
+ 					  i);
+ 				goto free_steps;
+ 			}
++			steps[i].data_offset = data_offset;
+ 		}
+ 	}
+ 

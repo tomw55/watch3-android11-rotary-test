@@ -17,6 +17,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$HERE/build-work}"
 OUT="${OUT:-$HERE/build-out}"
+mkdir -p "$WORK" "$OUT"
+WORK="$(realpath "$WORK")"
+OUT="$(realpath "$OUT")"
+if [[ -e "$OUT/artifacts" || -e "$OUT/exit-codes.txt" ]]; then
+    echo "ERROR: use a fresh OUT directory to avoid stale build evidence." >&2
+    exit 2
+fi
 
 # --- Pinned provenance. Do not change these without re-verifying the
 # source against README.md's "Source identification" section. ---
@@ -25,11 +32,9 @@ KERNEL_SRC_URL="${KERNEL_SRC_URL:-}"   # must be set by the caller (CI secret/va
 KERNEL_SRC_LOCAL="${KERNEL_SRC_LOCAL:-}"  # alternative: a local path to the zip, skips download
 
 MODEL=tizen_noblesse
-VARIANT_DEFCONFIG="${MODEL}_large_defconfig"
+VARIANT_DEFCONFIG="${MODEL}_ci_variant_defconfig"
 DTB_TARGET="exynos9110-tizen_noblesse_large_bt-r08.dtb"
 ARCH=arm64
-
-mkdir -p "$WORK" "$OUT"
 
 echo "== Step 1: obtain the pinned kernel source zip =="
 ZIP_PATH="$WORK/kernel_samsung_galileo-master.zip"
@@ -37,7 +42,7 @@ if [ -n "$KERNEL_SRC_LOCAL" ]; then
     echo "Using local source: $KERNEL_SRC_LOCAL"
     cp -f "$KERNEL_SRC_LOCAL" "$ZIP_PATH"
 elif [ -n "$KERNEL_SRC_URL" ]; then
-    echo "Downloading pinned source from: $KERNEL_SRC_URL"
+    echo "Downloading pinned source from the configured URL"
     curl -fL --retry 3 -o "$ZIP_PATH" "$KERNEL_SRC_URL"
 else
     echo "ERROR: neither KERNEL_SRC_URL nor KERNEL_SRC_LOCAL is set." >&2
@@ -72,6 +77,10 @@ echo "== Step 4: apply only the independently accepted safety patches =="
 echo "accepted set: $(ls "$HERE/patches/accepted"/*.patch | xargs -n1 basename | tr '\n' ' ')"
 echo "held out (not applied) this round: $(ls "$HERE/patches/held"/*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
 cd "$SRC"
+# The distribution ZIP carries previously built host tools and .cmd records.
+# Keep shipped lexer/parser C sources, but rebuild all bundled host binaries.
+rm -f scripts/basic/{fixdep,.fixdep.cmd} \
+    scripts/kconfig/{conf,conf.o,zconf.tab.o,.conf.cmd,.conf.o.cmd,.zconf.tab.o.cmd}
 for p in "$HERE"/patches/accepted/*.patch; do
     echo "--- applying $(basename "$p") ---"
     patch --batch --forward --fuzz=0 -p1 < "$p"
@@ -106,60 +115,42 @@ if ! command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
     echo "for a local run, install an aarch64 cross-toolchain first." >&2
     exit 4
 fi
-"${CROSS_COMPILE}gcc" --version | tee "$OUT/toolchain-version.txt"
-echo "NOTE: the original Samsung/Tizen build used CROSS_COMPILE=aarch64-tizen-linux-gnu-" \
-     "(the Tizen SDK's own cross-gcc, exact version not recorded in this source tree)." \
-     "This build substitutes the public ${CROSS_COMPILE}gcc toolchain shown above." \
-     "This is a documented, intentional deviation -- see README.md -- and means this" \
-     "build is reproducible/deterministic in CI, not byte-identical to Samsung's" \
-     "factory image." | tee -a "$OUT/toolchain-version.txt"
+{
+    "${CROSS_COMPILE}gcc" --version
+    "${CROSS_COMPILE}gcc" -dumpmachine
+    "${CROSS_COMPILE}ld" --version
+    "${HOSTCC:-gcc}" --version
+    echo "Samsung release.sh uses aarch64-tizen-linux-gnu-; exact DWK2 GCC is unknown."
+} | tee "$OUT/toolchain-version.txt"
 
-echo "== Step 6: configure (base defconfig + Watch3/SM-R840 size variant) =="
+echo "== Step 6: configure (Noblesse + large + Samsung's default Broadcom fragment) =="
+# release.sh appends the brcm fragment for Noblesse when neither hub is explicit.
+# LPS22HB in the base config links to sensors_core, which this fragment enables.
+{
+    cat "arch/$ARCH/configs/${MODEL}_large_defconfig"
+    printf '\n'
+    cat "arch/$ARCH/configs/${MODEL}_brcm_defconfig"
+} > "arch/$ARCH/configs/$VARIANT_DEFCONFIG"
 make ARCH=$ARCH "${MODEL}_defconfig" VARIANT_DEFCONFIG="$VARIANT_DEFCONFIG"
 cp .config "$OUT/config.final"
-grep -E "^CONFIG_NOBLESSE_(LARGE|SMALL)=y" .config | tee "$OUT/config-variant-confirmation.txt"
-if ! grep -q "^CONFIG_NOBLESSE_LARGE=y" .config; then
-    echo "ERROR: CONFIG_NOBLESSE_LARGE not set -- the large (45mm, SM-R840-class)" >&2
-    echo "variant fragment did not take effect. Refusing to continue silently" >&2
-    echo "with the wrong board variant." >&2
-    exit 5
-fi
-echo "PASS: configured for the NOBLESSE_LARGE (45mm, SM-R840-class) variant."
+required_config=(NOBLESSE NOBLESSE_LARGE INPUT_LPS22HB SENSORS_SSP_BBD SENSORS_SYSFS)
+for symbol in "${required_config[@]}"; do
+    if ! grep -qx "CONFIG_$symbol=y" .config; then
+        echo "ERROR: CONFIG_$symbol did not resolve to y." >&2
+        exit 5
+    fi
+done
+grep -E '^CONFIG_(NOBLESSE|NOBLESSE_LARGE|INPUT_LPS22HB|SENSORS_SSP_BBD|SENSORS_SYSFS)=y$' \
+    .config | tee "$OUT/config-variant-confirmation.txt"
 
 echo "== Step 7: build Image, the SM-R840 (Noblesse large BT r08) DTB, and modules =="
-JOBS="$(nproc)"
-
-# --- Fix 1 (narrowly scoped, evidence in README.md "CI fix log"): GCC 11's
-# -Wattribute-alias is promoted to a hard error by this tree's own
-# unconditional -Werror (top-level Makefile), and fires on the historical
-# Linux 4.9 __SYSCALL_DEFINEx macro pattern in include/linux/syscalls.h,
-# which intentionally aliases sys_foo to a SyS_foo target whose arguments
-# are widened to `long` -- a deliberate ABI-safety widening, not a bug.
-# KCFLAGS is Kbuild's own user-override hook: the top-level Makefile
-# appends it last (`KBUILD_CFLAGS += $(ARCH_CFLAGS) $(KCFLAGS)`, after the
-# base -Werror is set), so this demotes ONLY this one warning class back
-# to non-fatal. It does not touch -Werror generally and does not change a
-# single byte of syscalls.h or any syscall ABI definition.
-#
-# --- Fix 4 (narrowly scoped, evidence in README.md "CI fix log"): GCC 11's
-# -Warray-bounds fires on arch/arm64/include/asm/atomic_ll_sc.h and
-# cmpxchg.h's "+Q" inline-asm memory operand, which always types its
-# target as `*(unsigned long *)ptr` (8 bytes) regardless of the real
-# access width (byte/half/word/doubleword, selected separately by the
-# asm mnemonic's size suffix) -- a conservative dependency hint for the
-# instruction scheduler, not a literal access-width declaration. For a
-# 4-byte atomic_t (e.g. kernel/panic.c's panic_cpu, mm/swap_state.c's
-# swapin_readahead_hits -- the exact two objects GitHub Actions reported
-# against kernel/panic.o and mm/swap_state.o), GCC's object-size tracking
-# sees an 8-byte access claimed against a 4-byte object and flags it,
-# even though the real emitted instruction is a correctly-sized 32-bit
-# ldxr/stxr. Confirmed as a false positive by host-side reproduction
-# using this exact macro chain (see README.md); same KCFLAGS mechanism
-# and same narrow per-warning-class scoping as Fix 1.
-IMAGE_KCFLAGS="-Wno-error=attribute-alias -Wno-error=array-bounds"
+JOBS="${JOBS:-$(nproc)}"
+[[ $JOBS =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: JOBS must be a positive integer."; exit 2; }
+# Empty by default. Preserve the kernel's own -Werror warnings policy.
+IMAGE_KCFLAGS="${IMAGE_KCFLAGS-}"
 
 set +e
-make -j"$JOBS" ARCH=$ARCH KCFLAGS="$IMAGE_KCFLAGS" Image 2>&1 | tee "$OUT/build-image.log"
+make -k -j"$JOBS" ARCH=$ARCH KCFLAGS="$IMAGE_KCFLAGS" Image 2>&1 | tee "$OUT/build-image.log"
 IMAGE_RC=${PIPESTATUS[0]}
 
 # --- Fix 2: arch/arm64/Makefile's own "%.dtb: scripts" pattern rule
@@ -197,11 +188,23 @@ set -e
 echo "== Step 8: collect and hash artifacts =="
 mkdir -p "$OUT/artifacts"
 cp System.map "$OUT/artifacts/System.map" 2>/dev/null || true
-if [ -f arch/arm64/boot/Image ]; then
-    cp arch/arm64/boot/Image "$OUT/artifacts/Image"
+if [[ $IMAGE_RC == 0 ]]; then
+    if [[ -s arch/arm64/boot/Image ]] &&
+       [[ $(od -An -j56 -N4 -tx1 arch/arm64/boot/Image | tr -d '[:space:]') == 41524d64 ]]; then
+        cp arch/arm64/boot/Image "$OUT/artifacts/Image"
+    else
+        echo "ERROR: make succeeded without a valid ARM64 Image header." >&2
+        IMAGE_RC=1
+    fi
 fi
-if [ -f "arch/arm64/boot/dts/exynos/${DTB_TARGET}" ]; then
-    cp "arch/arm64/boot/dts/exynos/${DTB_TARGET}" "$OUT/artifacts/${DTB_TARGET}"
+if [[ $DTB_RC == 0 ]]; then
+    dtb="arch/arm64/boot/dts/exynos/${DTB_TARGET}"
+    if [[ -s $dtb ]] && [[ $(od -An -N4 -tx1 "$dtb" | tr -d '[:space:]') == d00dfeed ]]; then
+        cp "$dtb" "$OUT/artifacts/${DTB_TARGET}"
+    else
+        echo "ERROR: make succeeded without a valid DTB header." >&2
+        DTB_RC=1
+    fi
 fi
 # Note: the cp above addresses the DTB's real filesystem path, which is
 # unchanged (arch/arm64/boot/dts/exynos/<dtb>) -- only the make *target
