@@ -68,10 +68,10 @@ jobs:
           # Android/Tizen tree expects; fall back to whatever aarch64
           # cross-gcc the runner image offers if that package is gone.
           if apt-cache show gcc-8-aarch64-linux-gnu >/dev/null 2>&1; then
-            sudo apt-get install -y gcc-8-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
             echo "CROSS_COMPILE_BIN=aarch64-linux-gnu-" >> "$GITHUB_ENV"
             # Make the gcc-8 binary resolvable under the expected gcc name.
-            sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-8 100
+            sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc 100
           else
             echo "::warning::gcc-8-aarch64-linux-gnu unavailable on this runner image; falling back to gcc-aarch64-linux-gnu (version logged below, may differ from what this 2017-era kernel tree expects)."
             sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
