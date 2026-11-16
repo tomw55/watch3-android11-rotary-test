@@ -132,6 +132,34 @@ echo "== Step 6: configure (Noblesse + large + Samsung's default Broadcom fragme
     cat "arch/$ARCH/configs/${MODEL}_brcm_defconfig"
 } > "arch/$ARCH/configs/$VARIANT_DEFCONFIG"
 make ARCH=$ARCH "${MODEL}_defconfig" VARIANT_DEFCONFIG="$VARIANT_DEFCONFIG"
+if [[ ${ANDROID11_COMPAT:-0} == 1 ]]; then
+    echo "== Experimental Android 11 Binder and SELinux configuration =="
+    cp .config "$OUT/config.noblesse"
+    scripts/config --enable ANDROID --enable ANDROID_BINDER_IPC \
+        --set-str ANDROID_BINDER_DEVICES binder,hwbinder,vndbinder \
+        --enable SECURITY --enable SECURITY_NETWORK --enable AUDIT \
+        --enable SECURITY_SELINUX --disable SECURITY_SMACK \
+        --enable DEFAULT_SECURITY_SELINUX \
+        --disable SECURITY_SELINUX_DEVELOP \
+        --disable SECURITY_SELINUX_BOOTPARAM --disable SECURITY_SELINUX_DISABLE
+    make ARCH=$ARCH olddefconfig
+    cp .config "$OUT/config.final"
+    diff -u "$OUT/config.noblesse" "$OUT/config.final" > "$OUT/config.android11.diff" ||
+        [[ $? == 1 ]]
+    cat "$OUT/config.android11.diff"
+    for expected in CONFIG_ANDROID_BINDER_IPC=y CONFIG_SECURITY_SELINUX=y \
+        CONFIG_DEFAULT_SECURITY_SELINUX=y 'CONFIG_DEFAULT_SECURITY="selinux"' \
+        'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' \
+        '# CONFIG_SECURITY_SMACK is not set' \
+        '# CONFIG_SECURITY_SELINUX_DEVELOP is not set' \
+        '# CONFIG_SECURITY_SELINUX_BOOTPARAM is not set' \
+        '# CONFIG_SECURITY_SELINUX_DISABLE is not set'; do
+        if ! grep -Fxq "$expected" .config; then
+            echo "ERROR: Android 11 configuration did not resolve: $expected" >&2
+            exit 5
+        fi
+    done
+fi
 cp .config "$OUT/config.final"
 required_config=(NOBLESSE NOBLESSE_LARGE INPUT_LPS22HB SENSORS_SSP_BBD SENSORS_SYSFS)
 for symbol in "${required_config[@]}"; do

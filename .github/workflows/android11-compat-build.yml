@@ -1,0 +1,50 @@
+name: Watch3 Android 11 compatibility compile
+
+on:
+  push:
+    branches: [audit/android11-binder-selinux]
+    paths:
+      - scripts/build-kernel.sh
+      - .github/workflows/android11-compat-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    if: github.ref == 'refs/heads/audit/android11-binder-selinux'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    env:
+      ANDROID11_COMPAT: '1'
+      KERNEL_SRC_URL: ${{ vars.KERNEL_SRC_URL || 'https://github.com/tomw55/watch3-android11-rotary-test/releases/download/kernel-source-4.9.59/kernel_samsung_galileo-master.zip' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install host tools and pinned compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils
+          prefix=$(scripts/install-kernel-toolchain.sh "$RUNNER_TEMP/watch3-toolchain")
+          echo "CROSS_COMPILE=$prefix" >> "$GITHUB_ENV"
+      - name: Compile experimental Image and rev08 DTB
+        run: |
+          mkdir -p build-out
+          set -o pipefail
+          bash scripts/build-kernel.sh 2>&1 | tee build-out/build-driver.log
+      - name: Upload compile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch3-android11-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build-out/
+          if-no-files-found: warn
+      - name: Record scope
+        if: always()
+        run: |
+          echo 'Boot, Binder transactions, and enforcing SELinux runtime: NOT RUN.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f build-out/exit-codes.txt ]]; then
+            cat build-out/exit-codes.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
