@@ -20,16 +20,22 @@ facts = {
     "egl_error": r"eglQueryStringImplementationANDROID\(EGL_VERSION\) failed",
 }
 observed = {name: bool(re.search(pattern, log, re.IGNORECASE)) for name, pattern in facts.items()}
-# The expected fstab has no ro flag. A success record with the exact source
-# and target plus an ext4 write to the real backing image is stronger than
-# a generic kernel ext4 mount line, which does not name the mount point.
+# A temporary ext4 mount and a changed image do not prove that Android
+# retained a writable /data after vold's encryption setup.
 before = out / "userdata-before.sha256"
 after = out / "userdata-after.sha256"
 changed = before.read_text().split()[0] != after.read_text().split()[0]
-direct_mount = bool(re.search(r"__mount\(source=/dev/block/vdc,target=/data,type=ext4\)=0", log))
-observed["data_rw"] |= direct_mount and changed and observed["userdata_disk_at_vdc"]
+post_fs = re.search(r"processing action \(post-fs-data\)", log)
+post_fs_log = log[post_fs.start():] if post_fs else ""
+data_ro = bool(re.search(r"(?:/data(?:/|\b)).*Read-only file system", post_fs_log, re.I))
+encryption_failed = bool(re.search(r"Encryption failed|encryptFstab.*Failed", log, re.I))
+observed["post_fs_data_seen"] = bool(post_fs)
+# Require a positive write check or explicit read-write observation.
+observed["data_rw"] = observed["data_rw"] and bool(post_fs) and not data_ro and not encryption_failed
 report = ["kernel=stock SDK revision 16 kernel-ranchu (not Samsung Linux 4.9)"]
 report += [f"{name}={'OBSERVED' if success else 'NOT OBSERVED'}" for name, success in observed.items()]
+report.append(f"post_fs_data_read_only={'YES' if data_ro else 'NOT OBSERVED'}")
+report.append(f"encryption_setup_failed={'YES' if encryption_failed else 'NOT OBSERVED'}")
 report.append(f"userdata_backing_changed={'YES' if changed else 'NO'}")
 report.append("egl_blocks_framework=NO (boot completed despite EGL error)" if
               observed["egl_error"] and observed["boot_completed_1"] else

@@ -25,6 +25,19 @@ printf 'label: gpt\nunit: sectors\n\nstart=%d, size=%d, name="metadata"\n' "$sta
 sfdisk --json "$metadata" > "$out/metadata-gpt.json"
 truncate -s "$((sectors * 512))" "$work/fs.ext4"
 mke2fs -q -F -t ext4 -L metadata "$work/fs.ext4"
+# Android 11 private/file_contexts labels /metadata and /metadata/vold
+# differently. Seed only these labels on the disposable filesystem;
+# vold must generate the encryption keys itself.
+{
+    debugfs -w -R 'ea_set / security.selinux u:object_r:metadata_file:s0' "$work/fs.ext4"
+    debugfs -w -R 'mkdir /vold' "$work/fs.ext4"
+    debugfs -w -R 'set_inode_field /vold mode 040700' "$work/fs.ext4"
+    debugfs -w -R 'ea_set /vold security.selinux u:object_r:vold_metadata_file:s0' "$work/fs.ext4"
+    debugfs -R 'ea_list /' "$work/fs.ext4"
+    debugfs -R 'ea_list /vold' "$work/fs.ext4"
+} > "$out/metadata-labels.txt" 2>&1
+grep -Fq 'u:object_r:metadata_file:s0' "$out/metadata-labels.txt"
+grep -Fq 'u:object_r:vold_metadata_file:s0' "$out/metadata-labels.txt"
 dd if="$work/fs.ext4" of="$metadata" bs=512 seek="$start" conv=notrunc status=none
 # Lower MMIO slots enumerate first in the verified stock kernel run.
 # Keep metadata at slot 30. Shift vendor and system down one slot so
