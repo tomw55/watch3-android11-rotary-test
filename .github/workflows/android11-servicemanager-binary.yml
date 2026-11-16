@@ -1,0 +1,33 @@
+name: Android 11 ARM64 servicemanager binary acquisition
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - '.github/workflows/android11-servicemanager-binary.yml'
+      - 'ci/binder-adaptation/acquire-servicemanager.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acquire:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install image inspection tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip
+      - name: Extract actual Android 11 ARM64 servicemanager executable
+        run: bash ci/binder-adaptation/acquire-servicemanager.sh
+      - name: Upload binary and dependency evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android11-servicemanager-binary-${{ github.run_id }}
+          path: |
+            servicemanager-binary/servicemanager
+            servicemanager-binary/*.txt
+            servicemanager-binary/*.sha256
+            servicemanager-binary/*.log
+          retention-days: 7
