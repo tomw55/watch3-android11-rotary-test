@@ -14,10 +14,11 @@ unzip -q "$out/commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
 mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
 # sdkmanager closes stdin once licences are accepted; avoid SIGPIPE from yes
 # under pipefail, and still require sdkmanager itself to succeed.
-set +o pipefail
+set +e
 yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > "$out/licenses.log" 2>&1
-license_rc=${PIPESTATUS[1]}
-set -o pipefail
+license_status=( "${PIPESTATUS[@]}" )
+set -e
+license_rc=${license_status[1]}
 if (( license_rc != 0 )); then
   cat "$out/licenses.log" >&2
   exit "$license_rc"
