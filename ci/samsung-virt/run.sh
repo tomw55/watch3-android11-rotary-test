@@ -39,6 +39,21 @@ sed -i '\|^#include <soc/samsung/exynos-powermode.h>$|d' kernel/cpu.c
 grep -Eq '^obj-y[[:space:]]*\+=[[:space:]]*gpu/[[:space:]]*$' drivers/Makefile
 sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
 echo "Excluded the GPU subtree from this headless virt build."
+# The schedutil object owns this sysctl variable. Do not advertise the
+# control when the guest does not build that governor into the kernel.
+python3 - <<'PYFIX'
+from pathlib import Path
+path = Path("kernel/sysctl.c")
+source = path.read_text()
+old = '#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_TIZEN_MORION\n\t{\n\t\t.procname\t= "sched_rt_remove_ratio_for_freq",'
+new = old.replace(
+    "#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_TIZEN_MORION",
+    "#if defined(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) && !defined(CONFIG_CPU_FREQ_DEFAULT_GOV_TIZEN_MORION)",
+)
+if source.count(old) != 1:
+    raise SystemExit("Expected Samsung schedutil sysctl guard exactly once")
+path.write_text(source.replace(old, new))
+PYFIX
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 stage=build
