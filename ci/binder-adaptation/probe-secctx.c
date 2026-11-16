@@ -90,7 +90,7 @@ static void binder_test(void)
     if (server == 0) {
         close(ready[0]);
         close(done[1]);
-        int fd = binder_open(), zero = 0;
+        int fd = binder_open();
 #ifdef BINDER_SECCTX_TEST
         struct flat_binder_object mgr = {0};
         mgr.flags = FLAT_BINDER_FLAG_TXN_SECURITY_CTX;
@@ -101,6 +101,7 @@ static void binder_test(void)
              "set extended context manager");
         puts("PASS Binder extended context manager ioctl");
 #else
+        int zero = 0;
         need(ioctl(fd, BINDER_SET_CONTEXT_MGR, &zero) == 0, "set context manager");
 #endif
         uint32_t enter = BC_ENTER_LOOPER;
