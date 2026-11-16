@@ -60,11 +60,12 @@ stage=build
 make -k -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
 cp arch/arm64/boot/Image System.map "$out/"
 test "$(od -An -j56 -N4 -tx1 "$out/Image" | tr -d '[:space:]')" = 41524d64
-for symbol in binder_init selinux_init pl011_console vexpress_sysreg_driver; do
+for symbol in binder_init selinux_init pl011_console_write gic_init_bases psci_dt_init arch_timer_of_init; do
     grep -w "$symbol" "$out/System.map" || echo "Symbol absent: $symbol"
 done | tee "$out/symbols.txt"
 grep -qw binder_init "$out/System.map"
 grep -qw selinux_init "$out/System.map"
+(cd "$out" && sha256sum Image System.map config.final > SHA256SUMS)
 stage=initramfs
 mkdir -p "$work/uapi/linux/android"
 cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
