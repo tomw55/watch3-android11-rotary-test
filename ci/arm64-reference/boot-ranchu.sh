@@ -7,8 +7,8 @@ gzip -dc "$image/kernel-ranchu" > "$kernel"
 test "$(od -An -j56 -N4 -tx1 "$kernel" | tr -d '[:space:]')" = 41524d64
 sha256sum "$kernel" > "$out/boot-kernel-sha256.txt"
 qemu-system-aarch64 --version > "$out/qemu-version.txt"
-# These PCI positions are a test mapping based on the API 30 reference
-# emulator. The ARM64 stock fstab is captured for comparison.
+# Use adjacent virtio-mmio slots for all three disks so Android can
+# match platform parent names when generating /dev/block/by-name links.
 # Keep stock GPTs and ramdisk intact. Set no AVB or SELinux overrides.
 # fstab.ranchu requires a first-stage metadata partition on this MMIO slot.
 grep -Fq '/dev/block/platform/a003c00.virtio_mmio/by-name/metadata' "$out/fstab.ranchu"
@@ -28,11 +28,11 @@ args=(
     -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m 3072
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
-    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=pci0000:00/0000:00:03.0,pci0000:00/0000:00:06.0,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
+    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=a003a00.virtio_mmio,a003800.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
     -drive "if=none,id=system,file=$image/system.img,format=raw,readonly=on"
-    -device virtio-blk-pci,drive=system,addr=0x3
+    -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.29
     -drive "if=none,id=vendor,file=$image/vendor.img,format=raw,readonly=on"
-    -device virtio-blk-pci,drive=vendor,addr=0x6
+    -device virtio-blk-device,drive=vendor,bus=virtio-mmio-bus.28
     -drive "if=none,id=metadata,file=$metadata,format=raw,snapshot=on"
     -device virtio-blk-device,drive=metadata,bus=virtio-mmio-bus.30
 )
