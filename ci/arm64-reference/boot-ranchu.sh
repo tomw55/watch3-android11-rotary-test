@@ -54,11 +54,13 @@ printf '%s\n' \
     'slot=30 address=a003c00 expected=vdd role=metadata snapshot=yes' \
     > "$out/expected-disks.txt"
 sha256sum "$userdata" > "$out/userdata-before.sha256"
+# Test the shipped SwiftShader EGL libraries with a standard virtio GPU.
+# Upstream QEMU does not provide Android Emulator renderControl services.
 args=(
     -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m 3072
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
-    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.console=ttyAMA0 androidboot.boot_devices=a003800.virtio_mmio,a003600.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
+    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.console=ttyAMA0 androidboot.hardware.egl=swiftshader androidboot.boot_devices=a003800.virtio_mmio,a003600.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
     -drive "if=none,id=system,file=$image/system.img,format=raw,readonly=on"
     -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.28
     -drive "if=none,id=vendor,file=$image/vendor.img,format=raw,readonly=on"
@@ -67,6 +69,7 @@ args=(
     -device virtio-blk-device,drive=userdata,bus=virtio-mmio-bus.29
     -drive "if=none,id=metadata,file=$metadata,format=raw,snapshot=on"
     -device virtio-blk-device,drive=metadata,bus=virtio-mmio-bus.30
+    -device virtio-gpu-pci
 )
 printf '%q ' qemu-system-aarch64 "${args[@]}" > "$out/qemu-command.txt"
 printf '\n' >> "$out/qemu-command.txt"
