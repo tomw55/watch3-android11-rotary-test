@@ -13,6 +13,7 @@ curl -fL --retry 3 -o "$archive" "$url" 2>&1 | tee "$out/download.log"
 test "$(stat -c %s "$archive")" = 1244324730
 echo "0e66987d6b4db2e278af83d453ce5d74a7e6ced3  $archive" | sha1sum -c - | tee "$out/archive-verification.txt"
 sha256sum "$archive" > "$out/archive-sha256.txt"
+echo "097c2808a738ba4c19038b75a085750dd61a7178c0234b14ac5f8270dd8cff54  $archive" | sha256sum -c -
 unzip -l "$archive" > "$out/archive-members.txt"
 unzip -oq "$archive" -d "$work/extracted"
 metadata=$(find "$work/extracted" -maxdepth 2 -name source.properties -print -quit)
@@ -71,6 +72,10 @@ PYGPT
             debugfs -R "ls -l ${tree%/}/$dir" "$raw" >> "$out/$part-layout.txt" 2>&1
         done
     done
+    if [[ $part == vendor ]]; then
+        debugfs -R "dump /etc/fstab.ranchu $out/fstab.ranchu" "$raw" \
+            > "$out/fstab-inspection.log" 2>&1
+    fi
     if [[ $part == system ]]; then
         for init in /bin/init /system/bin/init; do
             debugfs -R "dump $init $work/init" "$raw" >> "$out/init-inspection.txt" 2>&1
@@ -92,3 +97,9 @@ grep -q AArch64 "$out/ramdisk-init-elf.txt"
 stage=inventory_complete
 printf '%s\n' 'ARM64 init and storage image inventory complete.' \
  'Guest boot, Android policy load and second-stage init: NOT RUN.' > "$out/scope.txt"
+
+if [[ ${TRY_RANCHU_QEMU:-0} == 1 ]]; then
+    stage=qemu_boot
+    bash "$script_dir/boot-ranchu.sh" "$image" "$out"
+    stage=second_stage
+fi
