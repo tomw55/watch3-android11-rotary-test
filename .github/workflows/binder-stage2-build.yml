@@ -1,0 +1,37 @@
+name: Samsung 4.9 Binder security context stage 2
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'ci/binder-adaptation/**'
+      - 'ci/samsung-virt/**'
+      - '.github/workflows/binder-stage2-build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu checkpolicy
+      - name: Compile Samsung 4.9 with Binder stage 1 and stage 2
+        run: |
+          mkdir -p samsung-virt-evidence
+          set -o pipefail
+          BINDER_STAGE1_PATCH="$GITHUB_WORKSPACE/ci/binder-adaptation/context-manager-stage1.patch" \
+            BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
+            ANDROID_INIT_FRAGMENT="$GITHUB_WORKSPACE/ci/samsung-virt/android-init.config" \
+            bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+      - name: Upload Binder build and diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-binder-stage2-${{ github.run_id }}
+          path: samsung-virt-evidence/
