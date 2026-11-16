@@ -15,7 +15,7 @@ jobs:
           persist-credentials: false
       - run: |
           sudo apt-get update
-          sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs binutils
+          sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio
       - run: bash ci/arm64-reference/inspect.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
