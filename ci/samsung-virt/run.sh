@@ -54,6 +54,23 @@ if source.count(old) != 1:
     raise SystemExit("Expected Samsung schedutil sysctl guard exactly once")
 path.write_text(source.replace(old, new))
 PYFIX
+if [[ -n ${REFERENCE_POLICY:-} ]]; then
+    # Report the full write result from the kernel. Android's reference
+    # policy need not permit this native PID 1 to write to the console.
+    python3 - <<'PYLOAD'
+from pathlib import Path
+p = Path("security/selinux/selinuxfs.c")
+s = p.read_text()
+old = "\tvfree(data);\n\treturn length;\n}\n\nstatic const struct file_operations sel_load_ops"
+assert s.count(old) == 1
+new = old.replace(
+    "\treturn length;",
+    '\tpr_info("virt-policy: load result=%zd bytes=%zu enforcing=%d\\n", length, count, selinux_enforcing);'
+    "\n\treturn length;",
+)
+p.write_text(s.replace(old, new))
+PYLOAD
+fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 stage=build
@@ -99,3 +116,25 @@ for marker in 'PASS guest init started' 'PASS /dev/binder protocol=' \
     grep -Fq "$marker" "$out/serial.log" || { echo "Missing: $marker" >&2; exit 1; }
 done
 stage=complete
+
+if [[ -n ${REFERENCE_POLICY:-} ]]; then
+    stage=android_policy
+    cp "$REFERENCE_POLICY" "$out/android-policy-v30.bin"
+    (cd "$out" && echo 'cefa481b0011472ba4ba9447bb66fe1663716992eda114fb7162408598fb91b5  android-policy-v30.bin' | sha256sum -c -)
+    aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
+        -DREFERENCE_POLICY -I "$work/uapi" "$repo/ci/samsung-virt/probe.c" -o "$work/init"
+    cp "$out/android-policy-v30.bin" "$work/test.policy"
+    "$work/gen_init_cpio" "$work/initramfs.list" > "$out/android-policy-initramfs.cpio"
+    qemu_rc=0
+    timeout 45 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
+        -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
+        -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/android-policy-initramfs.cpio" \
+        -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' \
+        > "$out/android-policy-serial.log" 2>&1 || qemu_rc=$?
+    printf '%s\n' "$qemu_rc" > "$out/android-policy-qemu-exit.txt"
+    tail -100 "$out/android-policy-serial.log"
+    grep -Fq 'virt-policy: load result=520276 bytes=520276 enforcing=1' "$out/android-policy-serial.log"
+    grep -Fq 'policy loaded' "$out/android-policy-serial.log"
+    (cd "$out" && sha256sum android-policy-v30.bin android-policy-initramfs.cpio >> SHA256SUMS)
+    stage=complete
+fi

@@ -1,0 +1,40 @@
+name: Samsung 4.9 Android reference policy load
+on:
+  push:
+    branches: [test/samsung49-android-policy]
+    paths:
+      - 'ci/samsung-virt/**'
+      - '.github/workflows/samsung49-android-policy.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  virt:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+      - name: Retrieve exact reference policy from successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: android11-policy-v30-43861149493
+          run-id: 43861149493
+          github-token: ${{ github.token }}
+          path: reference-policy
+      - name: Build Samsung kernel and test it under TCG
+        run: |
+          mkdir -p samsung-virt-evidence
+          set -o pipefail
+          REFERENCE_POLICY="$GITHUB_WORKSPACE/reference-policy/policy-v30.bin" bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+      - name: Upload compilation and guest evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-virt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: samsung-virt-evidence/
