@@ -1,0 +1,64 @@
+name: Watch3 Android 11 kernel compatibility audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify pinned Samsung source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit-out source
+          curl -fL --retry 3 \
+            -o source/kernel.zip \
+            https://github.com/tomw55/watch3-android11-rotary-test/releases/download/kernel-source-4.9.59/kernel_samsung_galileo-master.zip
+          echo "1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f  source/kernel.zip" \
+            | sha256sum -c -
+          unzip -q source/kernel.zip -d source
+
+      - name: Audit Android kernel features
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=$(find source -maxdepth 1 -type d -name 'kernel_samsung_galileo*' -print -quit)
+          test -n "$SRC"
+
+          {
+            echo "WATCH3 ANDROID 11 KERNEL SOURCE AUDIT"
+            echo "Source SHA256 verified before inspection"
+            echo
+            echo "=== Binder implementation ==="
+            find "$SRC/drivers/android" -maxdepth 2 -type f 2>/dev/null | sort || true
+            echo
+            echo "=== Binder Kconfig ==="
+            grep -RnE 'ANDROID_BINDER|BINDERFS|binderfs' \
+              "$SRC/drivers/android" "$SRC/fs/Kconfig" 2>/dev/null | head -100 || true
+            echo
+            echo "=== SELinux implementation ==="
+            find "$SRC/security/selinux" -maxdepth 2 -type f 2>/dev/null | sort | head -60 || true
+            echo
+            echo "=== SELinux and Smack Kconfig ==="
+            grep -RnE 'SECURITY_SELINUX|SECURITY_SMACK|DEFAULT_SECURITY' \
+              "$SRC/security/Kconfig" "$SRC/security/selinux/Kconfig" \
+              "$SRC/security/smack/Kconfig" 2>/dev/null | head -100 || true
+            echo
+            echo "=== Samsung Noblesse configuration ==="
+            grep -nE 'ANDROID_BINDER|BINDERFS|SECURITY_SELINUX|SECURITY_SMACK|DEFAULT_SECURITY|SECURITYFS' \
+              "$SRC/arch/arm64/configs/tizen_noblesse"*defconfig 2>/dev/null || true
+          } > audit-out/android11-kernel-audit.txt
+
+          cat audit-out/android11-kernel-audit.txt
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch3-android11-kernel-audit
+          path: audit-out/android11-kernel-audit.txt
