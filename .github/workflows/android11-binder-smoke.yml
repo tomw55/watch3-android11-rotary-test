@@ -1,0 +1,32 @@
+name: Android 11 x86_64 Binder smoke test
+on:
+  push:
+    branches: [test/android11-binder-x86]
+    paths:
+      - 'ci/binder/**'
+      - '.github/workflows/android11-binder-smoke.yml'
+permissions:
+  contents: read
+jobs:
+  binder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install emulator host libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpulse0
+      - name: Boot and verify reference guest
+        shell: bash
+        run: bash ci/binder/run.sh
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android11-x86-binder-evidence
+          path: ci/binder/evidence/
+          if-no-files-found: warn
+          retention-days: 7

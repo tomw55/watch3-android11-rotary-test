@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.watch3.cibinder">
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="30"/>
+    <application android:label="Watch3 Binder CI">
+        <activity android:name=".Probe" android:exported="true"/>
+        <service android:name=".Probe$Remote" android:process=":remote" android:exported="false"/>
+    </application>
+</manifest>
