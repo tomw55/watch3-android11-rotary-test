@@ -1,0 +1,24 @@
+name: Android 11 ARM64 Ranchu userdata verification
+on:
+  push:
+    branches: [test/android11-arm64-ranchu-userdata]
+    paths: ['ci/arm64-reference/**', '.github/workflows/android11-arm64-ranchu-userdata.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm
+      - run: TRY_RANCHU_QEMU=1 bash ci/arm64-reference/inspect.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: android11-arm64-ranchu-userdata-${{ github.run_id }}
+          path: arm64-reference-evidence/
