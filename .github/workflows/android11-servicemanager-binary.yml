@@ -16,6 +16,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Configure Java 17 for Android SDK command-line tools
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Install image inspection tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip
       - name: Extract actual Android 11 ARM64 servicemanager executable
