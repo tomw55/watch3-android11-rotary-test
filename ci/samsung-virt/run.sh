@@ -84,6 +84,13 @@ if [[ -n ${BINDER_STAGE1_PATCH:-} ]]; then
     git apply "$BINDER_STAGE1_PATCH"
     echo "Applied Samsung-specific Binder context-manager stage 1 patch" | tee "$out/binder-patch-result.txt"
 fi
+if [[ -n ${BINDER_STAGE2_SCRIPT:-} ]]; then
+    stage=binder_stage2_patch
+    python3 "$BINDER_STAGE2_SCRIPT" > "$out/binder-stage2.patch"
+    grep -q 'BR_TRANSACTION_SEC_CTX' include/uapi/linux/android/binder.h
+    grep -q 'security_release_secctx' drivers/android/binder.c
+    echo 'Applied Android 11 Binder sender security-context stage 2' | tee "$out/binder-stage2-result.txt"
+fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
