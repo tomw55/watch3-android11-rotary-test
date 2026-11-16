@@ -1,0 +1,26 @@
+name: Samsung 4.9 Binder source baseline
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'ci/binder-adaptation/**'
+      - '.github/workflows/binder-source-baseline.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Extract pinned Samsung Binder source and API
+        run: bash ci/binder-adaptation/inspect-source.sh
+      - name: Upload Binder source evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-binder-source-${{ github.run_id }}
+          path: binder-source-evidence/
