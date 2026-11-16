@@ -14,12 +14,14 @@ done
   cd "$out/source"
   sha256sum Android.bp main.cpp ServiceManager.cpp ServiceManager.h
 ) | tee "$out/SHA256SUMS"
-grep -Fq 'BINDER_SET_CONTEXT_MGR_EXT' "$out/source/main.cpp" || {
-  echo "Pinned AOSP main.cpp does not use expected extended Binder manager ioctl" >&2
-  exit 1
-}
+# Android 11 servicemanager calls into libbinder to become the context
+# manager. The ioctl itself is implemented in libbinder, not main.cpp.
 grep -Fq 'libbinder' "$out/source/Android.bp"
 grep -Fq 'libselinux' "$out/source/Android.bp"
+grep -Eq 'becomeContextManager|ProcessState|IPCThreadState' "$out/source/main.cpp" || {
+  echo "AOSP main.cpp lacks expected Binder library integration" >&2
+  exit 1
+}
 {
   echo "AOSP servicemanager source tag: $tag"
   echo "This audit retrieves source and dependencies only. It does NOT build or run servicemanager."
