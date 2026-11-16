@@ -115,8 +115,17 @@ fi
 stage=initramfs
 mkdir -p "$work/uapi/linux/android"
 cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
+probe_source="$repo/ci/samsung-virt/probe.c"
+probe_flags=()
+if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
+    [[ -n ${BINDER_STAGE1_PATCH:-} && -n ${BINDER_STAGE2_SCRIPT:-} ]] || {
+        echo "Binder runtime test requires both backport stages" >&2; exit 1;
+    }
+    probe_source="$repo/ci/binder-adaptation/probe-secctx.c"
+    probe_flags=(-DBINDER_SECCTX_TEST)
+fi
 aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
-    -I "$work/uapi" "$repo/ci/samsung-virt/probe.c" -o "$work/init"
+    "${probe_flags[@]}" -I "$work/uapi" "$probe_source" -o "$work/init"
 checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
 cc -O2 usr/gen_init_cpio.c -o "$work/gen_init_cpio"
 cat > "$work/initramfs.list" <<LIST
@@ -144,6 +153,15 @@ for marker in 'PASS guest init started' 'PASS /dev/binder protocol=' \
     'PASS all guest checks'; do
     grep -Fq "$marker" "$out/serial.log" || { echo "Missing: $marker" >&2; exit 1; }
 done
+if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
+    for marker in 'PASS Binder extended context manager ioctl' \
+        'PASS Binder sender security context=' \
+        'PASS Binder Android 11 security-context runtime checks'; do
+        grep -Fq "$marker" "$out/serial.log" || {
+            echo "Missing Binder runtime marker: $marker" >&2; exit 1;
+        }
+    done
+fi
 stage=complete
 
 if [[ -n ${REFERENCE_POLICY:-} ]]; then
