@@ -73,6 +73,11 @@ PYLOAD
 fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    while IFS= read -r setting; do
+        grep -Fxq "$setting" .config || { echo "Unresolved integration setting: $setting" >&2; exit 1; }
+    done < "$ANDROID_INIT_FRAGMENT"
+fi
 stage=build
 make -k -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
 cp arch/arm64/boot/Image System.map "$out/"
@@ -83,6 +88,10 @@ done | tee "$out/symbols.txt"
 grep -qw binder_init "$out/System.map"
 grep -qw selinux_init "$out/System.map"
 (cd "$out" && sha256sum Image System.map config.final > SHA256SUMS)
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    stage=kernel_ready
+    exit 0
+fi
 stage=initramfs
 mkdir -p "$work/uapi/linux/android"
 cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"

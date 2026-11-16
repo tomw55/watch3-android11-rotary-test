@@ -3,11 +3,16 @@ set -euo pipefail
 image=${1:?SDK image directory}
 out=${2:?evidence directory}
 kernel="${out%/*}/ranchu-Image"
-gzip -dc "$image/kernel-ranchu" > "$kernel"
+if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+    kernel="$SAMSUNG_INIT_KERNEL"
+    echo 'Samsung Linux 4.9.59 ARM64 virt integration build' > "$out/kernel-identity.txt"
+else
+    gzip -dc "$image/kernel-ranchu" > "$kernel"
+    printf '%s\n' 'Stock Google API 30 ARM64 kernel-ranchu, SDK image revision 16' \
+        'Samsung Linux 4.9: not used' > "$out/kernel-identity.txt"
+fi
 test "$(od -An -j56 -N4 -tx1 "$kernel" | tr -d '[:space:]')" = 41524d64
 sha256sum "$kernel" > "$out/boot-kernel-sha256.txt"
-printf '%s\n' 'Stock Google API 30 ARM64 kernel-ranchu, SDK image revision 16' \
-    'Samsung Linux 4.9: not used' > "$out/kernel-identity.txt"
 qemu-system-aarch64 --version > "$out/qemu-version.txt"
 # Use adjacent virtio-mmio slots for the guest disks so Android can
 # match platform parent names when generating /dev/block/by-name links.
@@ -71,7 +76,19 @@ args=(
     -device virtio-blk-device,drive=metadata,bus=virtio-mmio-bus.30
     -device virtio-gpu-pci
 )
-printf '%q ' qemu-system-aarch64 "${args[@]}" > "$out/qemu-command.txt"
+if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+    # Preserve every disk argument; remove only the graphics-specific trial.
+    filtered=()
+    for ((i=0; i<${#args[@]}; i++)); do
+        if [[ ${args[i]} == -device && ${args[i+1]} == virtio-gpu-pci ]]; then
+            ((i+=1))
+            continue
+        fi
+        filtered+=("${args[i]// androidboot.hardware.egl=swiftshader/}")
+    done
+    args=("${filtered[@]}")
+fi
+printf '%q '  qemu-system-aarch64 "${args[@]}" > "$out/qemu-command.txt"
 printf '\n' >> "$out/qemu-command.txt"
 rc=0
 timeout 180 qemu-system-aarch64 "${args[@]}" > "$out/serial.log" 2>&1 || rc=$?
@@ -82,4 +99,8 @@ grep -E 'Linux version|virtio_blk| v[d][a-z]:|__mount|mountFstab|sys.boot_comple
 # Inspect the guest's post-run filesystem metadata without mounting it.
 dumpe2fs -h "$userdata" > "$out/userdata-after.txt" 2>&1 || true
 sha256sum "$userdata" > "$out/userdata-after.sha256"
-python3 "$(dirname "$0")/boot-report.py" "$out"
+if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+    python3 "$(dirname "$0")/samsung-init-report.py" "$out" | tee "$out/samsung-init-observations.txt"
+else
+    python3 "$(dirname "$0")/boot-report.py" "$out"
+fi

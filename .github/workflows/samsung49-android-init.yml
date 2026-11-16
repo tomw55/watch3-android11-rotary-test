@@ -1,0 +1,35 @@
+name: Samsung 4.9 Android 11 ARM64 init integration
+on:
+  push:
+    branches: [test/samsung49-android-init]
+    paths: ['ci/samsung-virt/**', 'ci/arm64-reference/**', '.github/workflows/samsung49-android-init.yml']
+permissions:
+  contents: read
+jobs:
+  init:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm gcc-aarch64-linux-gnu checkpolicy
+      - name: Compile Samsung 4.9 integration kernel
+        run: |
+          mkdir -p samsung-virt-evidence
+          ANDROID_INIT_FRAGMENT="$GITHUB_WORKSPACE/ci/samsung-virt/android-init.config"             bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+        shell: bash
+      - name: Attempt Android 11 ARM64 init once
+        run: |
+          TRY_RANCHU_QEMU=1 SAMSUNG_INIT_KERNEL="$GITHUB_WORKSPACE/samsung-virt-evidence/Image"             bash ci/arm64-reference/inspect.sh
+      - name: Upload kernel config and boot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-android-init-${{ github.run_id }}
+          path: |
+            samsung-virt-evidence/
+            arm64-reference-evidence/
