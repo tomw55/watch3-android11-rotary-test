@@ -28,7 +28,7 @@ args=(
     -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m 3072
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
-    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=pci0000:00/0000:00:03.0,pci0000:00/0000:00:06.0,a003c00.virtio_mmio qemu=1 loglevel=7 panic=1'
+    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=pci0000:00/0000:00:03.0,pci0000:00/0000:00:06.0,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
     -drive "if=none,id=system,file=$image/system.img,format=raw,readonly=on"
     -device virtio-blk-pci,drive=system,addr=0x3
     -drive "if=none,id=vendor,file=$image/vendor.img,format=raw,readonly=on"
