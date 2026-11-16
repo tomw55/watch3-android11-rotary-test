@@ -34,6 +34,11 @@ done 2>&1 | tee "$out/patches.log"
 # Remove that dependency only in this disposable non-Exynos source tree.
 grep -Fxq '#include <soc/samsung/exynos-powermode.h>' kernel/cpu.c
 sed -i '\|^#include <soc/samsung/exynos-powermode.h>$|d' kernel/cpu.c
+# No graphics are needed for this serial-only guest. Samsung's unconditional
+# GPU entry otherwise expects arm/built-in.o even with Mali deselected.
+grep -Eq '^obj-y[[:space:]]*\+=[[:space:]]*gpu/[[:space:]]*$' drivers/Makefile
+sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
+echo "Excluded the GPU subtree from this headless virt build."
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 stage=build
