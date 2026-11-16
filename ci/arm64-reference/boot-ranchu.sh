@@ -100,6 +100,10 @@ grep -E 'Linux version|virtio_blk| v[d][a-z]:|__mount|mountFstab|sys.boot_comple
 dumpe2fs -h "$userdata" > "$out/userdata-after.txt" 2>&1 || true
 sha256sum "$userdata" > "$out/userdata-after.sha256"
 if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+    # Surface early service failures even when Binder retries fill the tail.
+    grep -Ei 'servicemanager|binderfs|binder.*ioctl|avc:.*denied|context.manager|fatal|not implemented|cannot link|could not.*binder|mount.*binder' \
+        "$out/serial.log" > "$out/samsung-binder-diagnostics.txt" || true
+    sed -n '1,100p' "$out/samsung-binder-diagnostics.txt"
     python3 "$(dirname "$0")/samsung-init-report.py" "$out" | tee "$out/samsung-init-observations.txt"
 else
     python3 "$(dirname "$0")/boot-report.py" "$out"
