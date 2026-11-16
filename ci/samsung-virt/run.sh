@@ -33,7 +33,7 @@ done 2>&1 | tee "$out/patches.log"
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 stage=build
-make -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
+make -k -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
 cp arch/arm64/boot/Image System.map "$out/"
 test "$(od -An -j56 -N4 -tx1 "$out/Image" | tr -d '[:space:]')" = 41524d64
 for symbol in binder_init selinux_init pl011_console vexpress_sysreg_driver; do

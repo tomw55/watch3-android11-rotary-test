@@ -6,6 +6,7 @@ export ARCH=arm64
 make defconfig
 scripts/config --enable ARCH_VEXPRESS --disable ARCH_EXYNOS --enable SERIAL_AMBA_PL011 \
     --enable SERIAL_AMBA_PL011_CONSOLE --enable BLK_DEV_INITRD \
+    --enable CGROUPS --enable CGROUP_SCHED --enable RT_GROUP_SCHED \
     --enable DEVTMPFS --enable TMPFS --enable TMPFS_XATTR \
     --enable ANDROID --enable ANDROID_BINDER_IPC \
     --set-str ANDROID_BINDER_DEVICES binder,hwbinder,vndbinder \
@@ -15,7 +16,7 @@ scripts/config --enable ARCH_VEXPRESS --disable ARCH_EXYNOS --enable SERIAL_AMBA
     --disable SECURITY_SELINUX_BOOTPARAM --disable SECURITY_SELINUX_DISABLE
 make olddefconfig
 for symbol in ARCH_VEXPRESS ARM_GIC ARM_PSCI_FW ARM_ARCH_TIMER VIRTIO_MMIO SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE \
-    BLK_DEV_INITRD DEVTMPFS TMPFS_XATTR ANDROID_BINDER_IPC SECURITY_SELINUX DEFAULT_SECURITY_SELINUX; do
+    BLK_DEV_INITRD DEVTMPFS TMPFS_XATTR RT_GROUP_SCHED ANDROID_BINDER_IPC SECURITY_SELINUX DEFAULT_SECURITY_SELINUX; do
     grep -Fxq "CONFIG_$symbol=y" .config || { echo "Missing CONFIG_$symbol=y" >&2; exit 1; }
 done
 grep -Fx 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' .config
