@@ -10,15 +10,31 @@ qemu-system-aarch64 --version > "$out/qemu-version.txt"
 # These PCI positions are a test mapping based on the API 30 reference
 # emulator. The ARM64 stock fstab is captured for comparison.
 # Keep stock GPTs and ramdisk intact. Set no AVB or SELinux overrides.
+# fstab.ranchu requires a first-stage metadata partition on this MMIO slot.
+grep -Fq '/dev/block/platform/a003c00.virtio_mmio/by-name/metadata' "$out/fstab.ranchu"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+metadata="$work/metadata.img"
+start=2048
+sectors=126944
+truncate -s 64M "$metadata"
+printf 'label: gpt\nunit: sectors\n\nstart=%d, size=%d, name="metadata"\n' "$start" "$sectors" \
+    | sfdisk "$metadata" > "$out/metadata-create.log" 2>&1
+sfdisk --json "$metadata" > "$out/metadata-gpt.json"
+truncate -s "$((sectors * 512))" "$work/fs.ext4"
+mke2fs -q -F -t ext4 -L metadata "$work/fs.ext4"
+dd if="$work/fs.ext4" of="$metadata" bs=512 seek="$start" conv=notrunc status=none
 args=(
     -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m 3072
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
-    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=pci0000:00/0000:00:03.0,pci0000:00/0000:00:06.0 qemu=1 loglevel=7 panic=1'
+    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.boot_devices=pci0000:00/0000:00:03.0,pci0000:00/0000:00:06.0,a003c00.virtio_mmio qemu=1 loglevel=7 panic=1'
     -drive "if=none,id=system,file=$image/system.img,format=raw,readonly=on"
     -device virtio-blk-pci,drive=system,addr=0x3
     -drive "if=none,id=vendor,file=$image/vendor.img,format=raw,readonly=on"
     -device virtio-blk-pci,drive=vendor,addr=0x6
+    -drive "if=none,id=metadata,file=$metadata,format=raw,snapshot=on"
+    -device virtio-blk-device,drive=metadata,bus=virtio-mmio-bus.30
 )
 printf '%q ' qemu-system-aarch64 "${args[@]}" > "$out/qemu-command.txt"
 printf '\n' >> "$out/qemu-command.txt"
