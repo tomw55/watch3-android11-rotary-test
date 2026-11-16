@@ -108,7 +108,6 @@ s = replace_once(s,
     """err_secctx:
 	if (secctx)
 		security_release_secctx(secctx, secctx_len);
-err_binder_alloc_buf_failed:
 	kfree(tcomplete);""")
 s = replace_once(s,
     "\t\tstruct binder_transaction_data tr;\n\t\tstruct binder_work *w = NULL;",
