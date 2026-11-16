@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+script_dir=$(cd "$(dirname "$0")" && pwd)
 out="$PWD/arm64-reference-evidence"
 mkdir -p "$out"
 stage=download
@@ -34,7 +35,7 @@ for part in system vendor; do
     # Ranchu images may be complete GPT disks, not partition payloads.
     if [[ $(od -An -j512 -N8 -tx1 "$raw" | tr -d '[:space:]') == 4546492050415254 ]]; then
         sfdisk --json "$raw" > "$out/$part-gpt.json"
-        read -r start length < <(python3 - "$part" "$out/$part-gpt.json" <<'PYGPT'
+        read -r start length partition < <(python3 - "$part" "$out/$part-gpt.json" <<'PYGPT'
 import json
 import sys
 
@@ -43,18 +44,25 @@ table = json.load(open(filename))["partitiontable"]
 sector_size = table["sectorsize"]
 parts = table["partitions"]
 matches = [entry for entry in parts if entry.get("name") in {part, part + "_a"}]
+if not matches:
+    matches = [entry for entry in parts if entry.get("name") == "super"]
 if not matches and len(parts) == 1:
     matches = parts
 if len(matches) != 1:
     raise SystemExit(f"Cannot uniquely select {part} from GPT")
 entry = matches[0]
-print(entry["start"] * sector_size, entry["size"] * sector_size)
+print(entry["start"] * sector_size, entry["size"] * sector_size, entry.get("name", "unnamed"))
 PYGPT
         )
         [[ $length -gt 0 && $((start + length)) -le $(stat -c %s "$raw") ]]
         dd if="$raw" of="$work/$part.ext4" bs=4M iflag=skip_bytes,count_bytes \
             skip="$start" count="$length" conv=sparse status=none
         raw="$work/$part.ext4"
+        if [[ $partition == super ]]; then
+            python3 "$script_dir/extract-logical.py" "$raw" "$part" "$work/$part.logical" \
+                | tee "$out/$part-liblp.json"
+            raw="$work/$part.logical"
+        fi
     fi
     test "$(od -An -j1080 -N2 -tx1 "$raw" | tr -d '[:space:]')" = 53ef
     debugfs -R 'ls -l /' "$raw" > "$out/$part-root.txt" 2>&1
