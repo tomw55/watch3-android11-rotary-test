@@ -1,0 +1,37 @@
+name: Samsung 4.9 Binder security context QEMU runtime
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'ci/binder-adaptation/**'
+      - 'ci/samsung-virt/**'
+      - '.github/workflows/binder-secctx-runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qemu:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install kernel and QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+      - name: Build Samsung kernel and verify Binder security context under QEMU
+        run: |
+          mkdir -p samsung-virt-evidence
+          set -o pipefail
+          BINDER_STAGE1_PATCH="$GITHUB_WORKSPACE/ci/binder-adaptation/context-manager-stage1.patch" \
+            BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
+            BINDER_SECCTX_RUNTIME=1 \
+            bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+      - name: Upload QEMU serial log and Binder evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-binder-runtime-${{ github.run_id }}
+          path: samsung-virt-evidence/
