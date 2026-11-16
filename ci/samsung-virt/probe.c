@@ -142,10 +142,10 @@ static void policy_test(void)
     need(mount("selinuxfs", "/sys/fs/selinux", "selinuxfs", 0, NULL) == 0, "mount selinuxfs");
     printf("SELinux policy maximum=%d\n", policy_value("/sys/fs/selinux/policyvers"));
     need(policy_value("/sys/fs/selinux/enforce") == 1, "enforcing before load");
-    fd = open("/allowed", O_RDONLY);
+    fd = open("/sys/devices/system/cpu/online", O_RDONLY);
     need(fd >= 0, "prepolicy allowed file");
     close(fd);
-    fd = open("/denied", O_RDONLY);
+    fd = open("/sys/devices/system/cpu/possible", O_RDONLY);
     need(fd >= 0, "prepolicy denied file");
     close(fd);
     fd = open("/test.policy", O_RDONLY);
@@ -157,11 +157,11 @@ static void policy_test(void)
     need(load >= 0 && write(load, policy, size) == size, "load policy v30");
     close(load);
     need(policy_value("/sys/fs/selinux/enforce") == 1, "enforcing after load");
-    fd = open("/allowed", O_RDONLY);
+    fd = open("/sys/devices/system/cpu/online", O_RDONLY);
     need(fd >= 0, "policy allow");
     close(fd);
     errno = 0;
-    fd = open("/denied", O_RDONLY);
+    fd = open("/sys/devices/system/cpu/possible", O_RDONLY);
     need(fd < 0 && errno == EACCES, "policy denial");
     puts("PASS SELinux v30 load enforcing allow and denial");
 }

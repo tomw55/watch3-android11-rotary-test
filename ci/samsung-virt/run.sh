@@ -72,7 +72,6 @@ cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
 aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
     -I "$work/uapi" "$repo/ci/samsung-virt/probe.c" -o "$work/init"
 checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
-touch "$work/empty"
 cc -O2 usr/gen_init_cpio.c -o "$work/gen_init_cpio"
 cat > "$work/initramfs.list" <<LIST
 dir /dev 755 0 0
@@ -80,8 +79,6 @@ nod /dev/console 600 0 0 c 5 1
 dir /sys 755 0 0
 file /init $work/init 755 0 0
 file /test.policy $work/test.policy 644 0 0
-file /allowed $work/empty 644 0 0
-file /denied $work/empty 644 0 0
 LIST
 "$work/gen_init_cpio" "$work/initramfs.list" > "$out/initramfs.cpio"
 cp "$work/test.policy" "$out/"
