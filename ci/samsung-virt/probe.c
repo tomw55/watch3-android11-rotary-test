@@ -81,12 +81,20 @@ static void binder_test(void)
         int fd = binder_open(), zero = 0;
         struct binder_transaction_data incoming, reply = {0};
         need(ioctl(fd, BINDER_SET_CONTEXT_MGR, &zero) == 0, "set context manager");
+        uint32_t enter = BC_ENTER_LOOPER;
+        struct binder_write_read registration = {
+            .write_size = sizeof(enter), .write_buffer = (uintptr_t)&enter,
+        };
+        need(ioctl(fd, BINDER_WRITE_READ, &registration) == 0 &&
+             registration.write_consumed == sizeof(enter), "BC_ENTER_LOOPER");
+        puts("Binder server entered looper");
         need(write(ready[1], "R", 1) == 1, "signal ready");
         exchange(fd, 0, NULL, BR_TRANSACTION, &incoming);
         need(incoming.sender_pid == client && incoming.code == 1 &&
              incoming.data_size == sizeof(token) && incoming.offsets_size == 0 &&
              memcmp((void *)(uintptr_t)incoming.data.ptr.buffer, &token, sizeof(token)) == 0,
              "server request validation");
+        puts("Binder server verified request");
         token = ~token;
         reply.data_size = sizeof(token);
         reply.data.ptr.buffer = (uintptr_t)&token;
@@ -102,6 +110,7 @@ static void binder_test(void)
     request.code = 1;
     request.data_size = sizeof(token);
     request.data.ptr.buffer = (uintptr_t)&token;
+    puts("Binder client sending transaction");
     exchange(fd, BC_TRANSACTION, &request, BR_REPLY, &reply);
     token = ~token;
     need(reply.data_size == sizeof(token) && reply.offsets_size == 0 &&
