@@ -75,6 +75,12 @@ PYGPT
     if [[ $part == vendor ]]; then
         debugfs -R "dump /etc/fstab.ranchu $out/fstab.ranchu" "$raw" \
             > "$out/fstab-inspection.log" 2>&1
+        for path in /lib64/egl /lib64/hw /etc/init; do
+            debugfs -R "ls -l $path" "$raw"
+        done > "$out/vendor-graphics-inventory.txt" 2>&1
+        for file in /etc/init/hw/init.ranchu.rc /etc/init/android.hardware.graphics.composer@2.3-service.rc; do
+            debugfs -R "cat $file" "$raw"
+        done > "$out/vendor-graphics-init.txt" 2>&1
     fi
     if [[ $part == system ]]; then
         for init in /bin/init /system/bin/init; do
