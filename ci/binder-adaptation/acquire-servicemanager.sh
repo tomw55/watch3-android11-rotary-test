@@ -12,7 +12,16 @@ curl -fsSL --retry 4 --connect-timeout 20 \
   -o "$out/commandline-tools.zip"
 unzip -q "$out/commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
 mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
-yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > "$out/licenses.log" 2>&1 || true
+# sdkmanager closes stdin once licences are accepted; avoid SIGPIPE from yes
+# under pipefail, and still require sdkmanager itself to succeed.
+set +o pipefail
+yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > "$out/licenses.log" 2>&1
+license_rc=${PIPESTATUS[1]}
+set -o pipefail
+if (( license_rc != 0 )); then
+  cat "$out/licenses.log" >&2
+  exit "$license_rc"
+fi
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
   'system-images;android-30;google_apis;arm64-v8a' > "$out/sdk-install.log" 2>&1
 image="$ANDROID_HOME/system-images/android-30/google_apis/arm64-v8a/system.img"
