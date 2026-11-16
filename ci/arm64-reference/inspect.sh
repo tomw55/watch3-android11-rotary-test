@@ -4,16 +4,24 @@ out="$PWD/arm64-reference-evidence"
 mkdir -p "$out"
 stage=download
 trap 'rc=$?; printf "stage=%s exit=%s\n" "$stage" "$rc" > "$out/result.txt"' EXIT
-sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK is required}}
-pkg='system-images;android-30;google_apis;arm64-v8a'
-sdkmanager --install "$pkg" 2>&1 | tee "$out/sdk-install.log"
-image="$sdk/system-images/android-30/google_apis/arm64-v8a"
+work=$(mktemp -d)
+archive="$work/reference.zip"
+url='https://dl.google.com/android/repository/sys-img/google_apis/arm64-v8a-30_r16.zip'
+printf '%s\n' "$url" > "$out/source-url.txt"
+curl -fL --retry 3 -o "$archive" "$url" 2>&1 | tee "$out/download.log"
+test "$(stat -c %s "$archive")" = 1244324730
+echo "0e66987d6b4db2e278af83d453ce5d74a7e6ced3  $archive" | sha1sum -c - | tee "$out/archive-verification.txt"
+sha256sum "$archive" > "$out/archive-sha256.txt"
+unzip -l "$archive" > "$out/archive-members.txt"
+unzip -oq "$archive" -d "$work/extracted"
+metadata=$(find "$work/extracted" -maxdepth 2 -name source.properties -print -quit)
+test -n "$metadata"
+image=$(dirname "$metadata")
 cp "$image/source.properties" "$out/"
 grep -Eq '^Pkg.Revision[[:space:]]*=[[:space:]]*16$' "$image/source.properties"
 stage=inventory
 (cd "$image" && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 -r sha256sum) > "$out/SHA256SUMS"
 file "$image"/* > "$out/file-types.txt"
-work=$(mktemp -d)
 # SDK system/vendor partitions can be Android sparse or raw ext4.
 for part in system vendor; do
     input="$image/$part.img"
