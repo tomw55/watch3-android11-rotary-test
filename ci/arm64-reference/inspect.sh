@@ -81,7 +81,14 @@ PYGPT
     fi
 done
 stage=ramdisk
-gzip -dc "$image/ramdisk.img" | cpio -it > "$out/ramdisk-members.txt"
+# Fully validate/decompress gzip before cpio, which stops at TRAILER!!!.
+gzip -dc "$image/ramdisk.img" > "$work/ramdisk.cpio" 2> "$out/ramdisk-gzip.log"
+cpio -it < "$work/ramdisk.cpio" > "$out/ramdisk-members.txt" 2> "$out/ramdisk-cpio.log"
+grep -Eq '^(\./)?init$' "$out/ramdisk-members.txt"
+cpio --quiet -i --to-stdout init < "$work/ramdisk.cpio" > "$work/ramdisk-init" \
+    2> "$out/ramdisk-init-extract.log"
+readelf -h -l -d "$work/ramdisk-init" > "$out/ramdisk-init-elf.txt"
+grep -q AArch64 "$out/ramdisk-init-elf.txt"
 stage=inventory_complete
 printf '%s\n' 'ARM64 init and storage image inventory complete.' \
  'Guest boot, Android policy load and second-stage init: NOT RUN.' > "$out/scope.txt"
