@@ -30,6 +30,10 @@ cp "$repo/ci/samsung-virt/test.conf" "$out/"
 for patchfile in "$repo"/patches/{accepted,ci-compat}/*.patch; do
     patch --batch --fuzz=0 -p1 < "$patchfile"
 done 2>&1 | tee "$out/patches.log"
+# Generic CPU hotplug has a Samsung header include but uses none of its declarations.
+# Remove that dependency only in this disposable non-Exynos source tree.
+grep -Fxq '#include <soc/samsung/exynos-powermode.h>' kernel/cpu.c
+sed -i '\|^#include <soc/samsung/exynos-powermode.h>$|d' kernel/cpu.c
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 stage=build
