@@ -71,6 +71,13 @@ new = old.replace(
 p.write_text(s.replace(old, new))
 PYLOAD
 fi
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    # The compat conversion helper can be unused when ELF core notes are absent.
+    # Inline keeps it available to callers without changing the warning policy.
+    grep -Eq '^static void cputime_to_compat_timeval\(' fs/compat_binfmt_elf.c
+    sed -i 's/^static void cputime_to_compat_timeval(/static inline void cputime_to_compat_timeval(/' \
+        fs/compat_binfmt_elf.c
+fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
