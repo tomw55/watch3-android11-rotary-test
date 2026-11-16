@@ -78,6 +78,12 @@ if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     sed -i 's/^static void cputime_to_compat_timeval(/static inline void cputime_to_compat_timeval(/' \
         fs/compat_binfmt_elf.c
 fi
+if [[ -n ${BINDER_STAGE1_PATCH:-} ]]; then
+    stage=binder_stage1_patch
+    git apply --check --verbose "$BINDER_STAGE1_PATCH" 2>&1 | tee "$out/binder-patch-check.log"
+    git apply "$BINDER_STAGE1_PATCH"
+    echo "Applied Samsung-specific Binder context-manager stage 1 patch" | tee "$out/binder-patch-result.txt"
+fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
