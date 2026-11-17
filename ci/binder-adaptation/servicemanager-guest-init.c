@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-static void logmsg(const char *s) { write(1,s,strlen(s)); }
+static void logmsg(const char *s) { size_t n=strlen(s); while(n) { ssize_t w=write(1,s,n); if(w<0) { if(errno==EINTR) continue; break; } if(w==0) break; s+=w; n-=(size_t)w; } }
 int main(void) {
   mkdir("/proc",0755); mkdir("/sys",0755); mkdir("/dev",0755);
   mount("proc","/proc","proc",0,NULL);
