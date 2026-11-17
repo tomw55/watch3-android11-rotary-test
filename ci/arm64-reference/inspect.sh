@@ -89,6 +89,31 @@ PYGPT
         done
         readelf -h -l -d "$work/init" >> "$out/init-inspection.txt"
         grep -q 'AArch64' "$out/init-inspection.txt"
+        # Identify the *actual* API 30 image bpfloader before trusting an AOSP
+        # source revision. These are read-only debugfs inspections.
+        {
+            for f in /etc/init/bpfloader.rc /system/etc/init/bpfloader.rc; do
+                echo "=== $f ==="
+                debugfs -R "cat $f" "$raw" 2>&1 || true
+            done
+        } > "$out/bpfloader-service-definition.txt"
+        {
+            for f in /etc/bpf /system/etc/bpf; do
+                echo "=== $f ==="
+                debugfs -R "ls -l $f" "$raw" 2>&1 || true
+            done
+        } > "$out/bpf-object-inventory.txt"
+        for f in /bin/bpfloader /system/bin/bpfloader; do
+            debugfs -R "dump $f $work/bpfloader" "$raw" > "$out/bpfloader-extract.log" 2>&1 || true
+            if [[ -s "$work/bpfloader" ]]; then break; fi
+        done
+        if [[ -s "$work/bpfloader" ]]; then
+            sha256sum "$work/bpfloader" > "$out/bpfloader-sha256.txt"
+            file "$work/bpfloader" > "$out/bpfloader-binary-type.txt"
+            strings -a "$work/bpfloader" | grep -Ei 'CRITICAL FAILURE|DO NOT EXPECT|Failed to load object|bpf.progs_loaded|/etc/bpf|/sys/fs/bpf|kernel options' > "$out/bpfloader-binary-markers.txt" || true
+        else
+            echo 'bpfloader binary not found in system ext4; check APEX/vendor' > "$out/bpfloader-binary-markers.txt"
+        fi
     fi
 done
 stage=ramdisk
