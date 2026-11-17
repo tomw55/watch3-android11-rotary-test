@@ -2,7 +2,7 @@ name: Samsung 4.9 Android 11 ARM64 init integration
 on:
   push:
     branches: [test/samsung49-android-init]
-    paths: ['ci/samsung-virt/**', 'ci/arm64-reference/**', '.github/workflows/samsung49-android-init.yml']
+    paths: ['ci/samsung-virt/**', 'ci/arm64-reference/**', 'scripts/dm-default-key-review-draft.c', 'scripts/dm-default-key-gates.sh', 'scripts/generate_dm_default_key_patch.py', 'patches/**', '.github/workflows/samsung49-android-init.yml']
 permissions:
   contents: read
 jobs:
