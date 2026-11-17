@@ -28,7 +28,23 @@ if ! dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 co
   dmesg | tail -40 >&2 || :
   exit 1
 fi
+# Synchronize the mapped block device and drain in-flight I/O before
+# inspecting raw backing ciphertext. This is a disposable, unmounted DM test.
 sync
+if ! dmsetup suspend dk_test 2>"$DK_TEST_DIR/gate2-suspend.err"; then
+  echo 'FAIL gate2: dmsetup suspend failed' >&2
+  cat "$DK_TEST_DIR/gate2-suspend.err" >&2
+  dmesg | tail -60 >&2 || :
+  exit 1
+fi
+if ! dmsetup resume dk_test 2>"$DK_TEST_DIR/gate2-resume.err"; then
+  echo 'FAIL gate2: dmsetup resume failed' >&2
+  cat "$DK_TEST_DIR/gate2-resume.err" >&2
+  dmesg | tail -60 >&2 || :
+  exit 1
+fi
+sync
+echo 'Gate 2 diagnostic: dmsetup suspend/resume completed'
 # BLKFLSBUF is not supported by this guest's mapped-device ioctl path.
 # It is a cache-invalidation ioctl, not the encryption correctness oracle.
 # Keep fsync/sync and require the independent raw ciphertext KAT below.
