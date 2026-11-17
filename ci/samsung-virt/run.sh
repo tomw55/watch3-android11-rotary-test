@@ -12,6 +12,24 @@ curl -fL --retry 3 -o source.zip \
 echo '1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f  source.zip' | sha256sum -c - | tee "$out/source-hash.txt"
 unzip -q source.zip
 cd kernel_samsung_galileo-master
+# Record source-level dm-default-key support before attempting config changes.
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    {
+        echo '=== Samsung 4.9.59 dm-default-key source inventory ==='
+        find drivers/md -maxdepth 1 -iname '*default*key*' -print
+        echo '=== Kconfig and Makefile references ==='
+        grep -nE 'DM_DEFAULT_KEY|BLK_INLINE_ENCRYPTION|INLINE_ENCRYPTION_FALLBACK' drivers/md/Kconfig drivers/md/Makefile || true
+        echo '=== Driver constructor and argument parsing (if present) ==='
+        if [[ -f drivers/md/dm-default-key.c ]]; then
+            grep -nE 'default_key_ctr|argc|argv|sector_size|iv_large_sectors|allow_discards|target_type' drivers/md/dm-default-key.c || true
+            sed -n '1,260p' drivers/md/dm-default-key.c
+        else
+            echo 'drivers/md/dm-default-key.c: ABSENT'
+        fi
+        echo '=== Other default-key implementation references ==='
+        grep -Rnl -E 'default-key|DM_DEFAULT_KEY' drivers/md --include='*.c' --include='Kconfig' --include='Makefile' | head -50 || true
+    } > "$out/dm-default-key-source-inspection.txt" 2>&1
+fi
 rm -f scripts/basic/{fixdep,.fixdep.cmd} \
   scripts/kconfig/{conf,conf.o,zconf.tab.o,.conf.cmd,.conf.o.cmd,.zconf.tab.o.cmd}
 stage=config
@@ -860,6 +878,9 @@ BINDER_TRACE
 fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    grep -E '^(CONFIG_(DM_DEFAULT_KEY|BLK_DEV_DM|DM_CRYPT|BLK_INLINE_ENCRYPTION|BLK_INLINE_ENCRYPTION_FALLBACK|FS_ENCRYPTION|EXT4_ENCRYPTION)=|# CONFIG_(DM_DEFAULT_KEY|BLK_DEV_DM|DM_CRYPT|BLK_INLINE_ENCRYPTION|BLK_INLINE_ENCRYPTION_FALLBACK|FS_ENCRYPTION|EXT4_ENCRYPTION) is not set)' .config > "$out/dm-default-key-compiled-config.txt" || true
+fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]] && grep -Eq '^CONFIG_RKP(_KDP)?=y$' .config; then
     echo 'Binder review v2 is restricted to the non-RKP QEMU configuration.' >&2
     exit 1
