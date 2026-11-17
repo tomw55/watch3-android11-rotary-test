@@ -8,7 +8,7 @@ permissions:
 jobs:
   init:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -25,6 +25,10 @@ jobs:
       - name: Attempt Android 11 ARM64 init once
         run: |
           TRY_RANCHU_QEMU=1 SAMSUNG_INIT_KERNEL="$GITHUB_WORKSPACE/samsung-virt-evidence/Image"             bash ci/arm64-reference/inspect.sh
+      - name: Validate dm-default-key gates 1-3 in disposable ARM64 QEMU
+        if: always()
+        run: |
+          bash ci/samsung-virt/run-dm-gates.sh "$GITHUB_WORKSPACE/samsung-virt-evidence/Image" "$GITHUB_WORKSPACE/dm-gates-evidence"
       - name: Upload kernel config and boot evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -33,3 +37,4 @@ jobs:
           path: |
             samsung-virt-evidence/
             arm64-reference-evidence/
+            dm-gates-evidence/
