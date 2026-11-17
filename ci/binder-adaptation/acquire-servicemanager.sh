@@ -119,7 +119,7 @@ python3 - "$out/system.ext4.img" "$out/guest" <<'PY'
 import os, pathlib, re, subprocess, sys
 image, root = sys.argv[1:]
 root = pathlib.Path(root)
-pending = ["/system/bin/linker64", "/system/bin/servicemanager"]
+pending = ["/system/bin/linker64", "/system/bin/servicemanager", "/system/bin/service"]
 seen = set()
 missing = []
 while pending:
@@ -166,7 +166,7 @@ while pending:
 if missing:
     raise RuntimeError("Missing Android shared libraries: " + ", ".join(missing))
 (root.parent / "guest-manifest.txt").write_text("\\n".join(sorted(seen)) + "\\n")
-print("PASS Android 11 recursive ELF dependencies packaged", flush=True)
+print("PASS Android 11 servicemanager and service client ELF dependencies packaged", flush=True)
 PY
 # Android's servicemanager requires the platform SELinux service label map.
 # Copy it from the same Android 11 image instead of silently omitting it.
