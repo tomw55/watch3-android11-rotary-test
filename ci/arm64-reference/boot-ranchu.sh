@@ -93,6 +93,8 @@ printf '\n' >> "$out/qemu-command.txt"
 rc=0
 timeout 180 qemu-system-aarch64 "${args[@]}" > "$out/serial.log" 2>&1 || rc=$?
 printf '%s\n' "$rc" > "$out/qemu-exit.txt"
+# Preserve full serial.log; extract BPF diagnostics before the noisy reboot tail.
+python3 "$(dirname "$0")/bpf-init-diagnostics.py" "$out" | tee "$out/bpf-init-diagnostics.txt"
 tail -70 "$out/serial.log"
 grep -E 'Linux version|virtio_blk| v[d][a-z]:|__mount|mountFstab|sys.boot_completed|eglQueryStringImplementationANDROID|starting service|SystemServer' \
     "$out/serial.log" > "$out/boot-events.txt" || true
