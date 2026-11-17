@@ -93,6 +93,25 @@ cp "$repo/ci/samsung-virt/test.conf" "$out/"
 for patchfile in "$repo"/patches/{accepted,ci-compat}/*.patch; do
     patch --batch --fuzz=0 -p1 < "$patchfile"
 done 2>&1 | tee "$out/patches.log"
+# Experimental QEMU-only driver compile gate.  Never install on a physical watch.
+# Stage after the accepted patches so the source sees the actual Samsung APIs.
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    stage=dm-default-key-integration
+    test ! -e drivers/md/dm-default-key.c
+    cp "$repo/scripts/dm-default-key-review-draft.c" drivers/md/dm-default-key.c
+    cat >> drivers/md/Kconfig <<'DK_KCONFIG'
+
+config DM_DEFAULT_KEY
+    bool "Android default-key target (QEMU experiment)"
+    depends on BLK_DEV_DM
+    select CRYPTO_SKCIPHER
+    select CRYPTO_XTS
+    help
+      Standalone AES-XTS default-key device-mapper target.
+DK_KCONFIG
+    printf '\nobj-$(CONFIG_DM_DEFAULT_KEY) += dm-default-key.o\n' >> drivers/md/Makefile
+    echo 'Staged experimental dm-default-key driver for compile verification' | tee "$out/dm-default-key-integration.txt"
+fi
 # Generic CPU hotplug has a Samsung header include but uses none of its declarations.
 # Remove that dependency only in this disposable non-Exynos source tree.
 grep -Fxq '#include <soc/samsung/exynos-powermode.h>' kernel/cpu.c
