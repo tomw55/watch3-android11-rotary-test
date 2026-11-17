@@ -34,57 +34,61 @@ if file "$image" | grep -q 'Android sparse image'; then
 else
   cp "$image" "$out/system.raw.img"
 fi
-# SDK emulator images can be full GPT disk images, not raw ext4.
-# Locate the system partition by GPT name and extract its byte range.
-python3 - "$out/system.raw.img" "$out/system.ext4.img" <<'PY'
+# Extract GPT 'super' partition; then unpack Android logical partitions with AOSP lpunpack.
+python3 - "$out/system.raw.img" "$out" <<'PY'
 import os, struct, sys
-src, dst = sys.argv[1:]
+src, out = sys.argv[1:]
 with open(src, 'rb') as f:
     f.seek(512)
     hdr = f.read(92)
     if hdr[:8] != b'EFI PART':
-        print('Not GPT: treating input as standalone filesystem')
-        os.link(src, dst)
+        print('No GPT; input may be a standalone ext4 filesystem', flush=True)
+        os.link(src, os.path.join(out, 'system.ext4.img'))
         sys.exit(0)
     entry_lba = struct.unpack_from('<Q', hdr, 72)[0]
     count, size = struct.unpack_from('<II', hdr, 80)
-    sector = 512
     if count > 256 or size < 128 or size > 1024:
         raise RuntimeError('Unexpected GPT entry geometry')
-    f.seek(entry_lba * sector)
+    f.seek(entry_lba * 512)
     entries = f.read(count * size)
-    candidates = []
+    partitions = []
     for i in range(count):
         e = entries[i*size:(i+1)*size]
-        if not any(e[:16]):
-            continue
+        if not any(e[:16]): continue
         first, last = struct.unpack_from('<QQ', e, 32)
-        name = e[56:128].decode('utf-16-le', 'ignore').rstrip('\\x00')
-        name = name.replace('\\x00', '')
-        print(f'GPT partition {i+1}: {name} sectors {first}-{last}')
-        if name.lower().replace('\\x00', '') in ('system', 'system_a', 'super'):
-            candidates.insert(0, (first, last, name))
-        else:
-            candidates.append((first, last, name))
-    if not candidates:
-        raise RuntimeError('No GPT partitions found')
-    for first, last, name in candidates:
-        f.seek(first * sector)
-        magic = f.read(2048)[1080:1082]
-        if magic == b'\\x53\\xef':
-            print('Found ext4 partition:', name)
-            f.seek(first * sector)
-            with open(dst, 'wb') as o:
-                remaining = (last-first+1)*sector
-                while remaining:
-                    data = f.read(min(4*1024*1024, remaining))
-                    if not data: raise RuntimeError('Truncated partition')
-                    o.write(data)
-                    remaining -= len(data)
-            break
+        name = e[56:128].decode('utf-16-le', 'ignore').rstrip(chr(0))
+        print(f'GPT partition {i+1}: {name} sectors {first}-{last}', flush=True)
+        partitions.append((name, first, last))
+    for target in ('super', 'system', 'system_a'):
+        match = next((p for p in partitions if p[0] == target), None)
+        if match is None: continue
+        name, first, last = match
+        dst = os.path.join(out, 'super.img' if target == 'super' else 'system.ext4.img')
+        f.seek(first * 512)
+        with open(dst, 'wb') as o:
+            remaining = (last-first+1)*512
+            while remaining:
+                chunk = f.read(min(4*1024*1024, remaining))
+                if not chunk: raise RuntimeError('Truncated GPT partition')
+                o.write(chunk)
+                remaining -= len(chunk)
+        print('Extracted GPT partition:', name, flush=True)
+        break
     else:
-        raise RuntimeError('No direct ext4 partition found; likely Android dynamic super partition')
+        raise RuntimeError('No super/system partition in GPT')
 PY
+if test -s "$out/super.img"; then
+  mkdir -p "$out/logical"
+  lpunpack "$out/super.img" "$out/logical" | tee "$out/lpunpack.log"
+  find "$out/logical" -maxdepth 1 -type f -printf '%f %s bytes\\n' | tee "$out/logical-partitions.txt"
+  for name in system_a system; do
+    if test -s "$out/logical/$name.img"; then
+      mv "$out/logical/$name.img" "$out/system.ext4.img"
+      break
+    fi
+  done
+fi
+test -s "$out/system.ext4.img" || { echo "No logical system partition found" >&2; exit 1; }
 file "$out/system.ext4.img" | tee "$out/filesystem-format.txt"
 debugfs -R 'dump /system/bin/servicemanager servicemanager-binary/servicemanager' \
   "$out/system.ext4.img" > "$out/debugfs.log" 2>&1 || true
