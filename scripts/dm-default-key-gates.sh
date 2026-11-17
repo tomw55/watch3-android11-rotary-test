@@ -68,7 +68,7 @@ else
 fi
 # The error target is independent of the disposable backing image.
 dmsetup create dk_err_backing --table '0 64 error'
-if ! printf '0 64 default-key AES-256-XTS %s 0 /dev/mapper/dk_err_backing 0 2 sector_size:4096 iv_large_sectors\\n' "$key" | dmsetup create dk_err_test; then
+if ! printf '0 64 default-key AES-256-XTS %s 0 /dev/mapper/dk_err_backing 0 2 sector_size:4096 iv_large_sectors\n' "$key" | dmsetup create dk_err_test; then
   dmsetup remove dk_err_backing || :
   echo 'FAIL error propagation: could not construct stacked target' >&2; exit 1
 fi
