@@ -7,6 +7,7 @@ on:
       - 'ci/binder-adaptation/acquire-servicemanager.sh'
       - 'ci/binder-adaptation/servicemanager-guest-init.c'
       - 'ci/binder-adaptation/register-test-service.c'
+      - 'ci/binder-adaptation/register-test-service-ndk.c'
       - 'ci/samsung-virt/run.sh'
   workflow_dispatch:
 permissions:
