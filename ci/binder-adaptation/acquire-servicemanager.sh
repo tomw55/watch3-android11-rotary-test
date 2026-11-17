@@ -119,7 +119,7 @@ python3 - "$out/system.ext4.img" "$out/guest" <<'PY'
 import os, pathlib, re, subprocess, sys
 image, root = sys.argv[1:]
 root = pathlib.Path(root)
-pending = ["/system/bin/linker64", "/system/bin/servicemanager", "/system/bin/service"]
+pending = ["/system/bin/linker64", "/system/bin/servicemanager", "/system/bin/service", "/system/lib64/libbinder_ndk.so"]
 seen = set()
 missing = []
 while pending:
