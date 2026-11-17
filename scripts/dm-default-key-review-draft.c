@@ -33,8 +33,6 @@
 #define DK_UNIT_SIZE		4096U
 #define DK_UNIT_SHIFT		12U
 #define DK_UNIT_SECTORS		(DK_UNIT_SIZE >> SECTOR_SHIFT)
-/* Worst-case segments in a 4096-byte unit is 8 (512-byte bvecs); allow 16 */
-#define DK_MAX_UNIT_SEGS	16
 
 struct default_key_c {
 	struct dm_dev *dev;
@@ -131,52 +129,80 @@ static u64 dk_compute_dun(struct default_key_c *cc, sector_t rel_sector,
 	return ((u64)total_sector >> shift_diff) + unit_idx;
 }
 
-static int dk_fill_unit_sg(struct bio *bio, struct bvec_iter *iter,
-			   struct scatterlist *sg, unsigned int max_segs,
-			   unsigned int unit_size)
+/*
+ * Count the actual bio fragments in each encryption unit.  A 4 KiB unit
+ * can cross more than eight short bvecs, so a fixed scatterlist is unsafe.
+ * The table stays alive until the (possibly asynchronous) crypto request
+ * has completed.
+ */
+#define DK_STACK_SEGS 8
+
+struct dk_unit_sg {
+	struct scatterlist stack[DK_STACK_SEGS];
+	struct sg_table dynamic;
+	struct scatterlist *sg;
+	bool allocated;
+};
+
+static int dk_make_unit_sg(struct bio *bio, struct bvec_iter *iter,
+			   unsigned int unit_size, struct dk_unit_sg *out)
 {
-	unsigned int rem = unit_size;
-	unsigned int n_segs = 0;
+	struct bvec_iter scan = *iter;
+	struct scatterlist *sg;
+	unsigned int remaining = unit_size, n = 0, i = 0;
+	int ret;
 
-	sg_init_table(sg, max_segs);
-
-	while (rem > 0) {
+	memset(out, 0, sizeof(*out));
+	while (remaining) {
 		struct bio_vec bv;
 		unsigned int len;
 
-		if (iter->bi_size == 0 || n_segs >= max_segs)
+		if (!scan.bi_size)
 			return -EIO;
-
-		bv = bio_iter_iovec(bio, *iter);
-		if (bv.bv_len == 0)
+		bv = bio_iter_iovec(bio, scan);
+		if (!bv.bv_len)
 			return -EIO;
-
-		len = min(rem, bv.bv_len);
-		sg_set_page(&sg[n_segs], bv.bv_page, len, bv.bv_offset);
-		n_segs++;
-
-		bio_advance_iter(bio, iter, len);
-		rem -= len;
+		len = min(remaining, bv.bv_len);
+		n++;
+		bio_advance_iter(bio, &scan, len);
+		remaining -= len;
 	}
+	if (n <= DK_STACK_SEGS) {
+		out->sg = out->stack;
+		sg_init_table(out->sg, n);
+	} else {
+		ret = sg_alloc_table(&out->dynamic, n, GFP_NOIO);
+		if (ret)
+			return ret;
+		out->allocated = true;
+		out->sg = out->dynamic.sgl;
+	}
+	remaining = unit_size;
+	sg = out->sg;
+	while (remaining) {
+		struct bio_vec bv = bio_iter_iovec(bio, *iter);
+		unsigned int len = min(remaining, bv.bv_len);
 
-	if (n_segs == 0)
-		return -EIO;
-
-	sg_mark_end(&sg[n_segs - 1]);
+		sg_set_page(sg, bv.bv_page, len, bv.bv_offset);
+		bio_advance_iter(bio, iter, len);
+		remaining -= len;
+		if (++i < n)
+			sg = sg_next(sg);
+	}
 	return 0;
 }
 
-/*
- * Encrypt or decrypt all 4096-byte units covered by src_bio -> dst_bio.
- * Writes: src_bio = base_bio (caller plaintext), dst_bio = clone_bio (bounce).
- * Reads:  src_bio = base_bio, dst_bio = base_bio (in-place after read I/O).
- */
+static void dk_release_unit_sg(struct dk_unit_sg *unit)
+{
+	if (unit->allocated)
+		sg_free_table(&unit->dynamic);
+}
+
+/* Both scatterlists remain valid until async crypto completion. */
 static int dk_crypt_bio(struct default_key_c *cc, struct bio *src_bio,
 			struct bio *dst_bio, sector_t rel_sector, bool encrypt)
 {
 	struct skcipher_request *req;
-	struct scatterlist src_sg[DK_MAX_UNIT_SEGS];
-	struct scatterlist dst_sg[DK_MAX_UNIT_SEGS];
 	struct bvec_iter src_iter = src_bio->bi_iter;
 	struct bvec_iter dst_iter = dst_bio->bi_iter;
 	unsigned int unit_size = cc->sector_size;
@@ -192,30 +218,36 @@ static int dk_crypt_bio(struct default_key_c *cc, struct bio *src_bio,
 		return -ENOMEM;
 
 	while (src_iter.bi_size >= unit_size) {
+		struct dk_unit_sg src, dst;
 		u64 dun;
 
-		err = dk_fill_unit_sg(src_bio, &src_iter, src_sg,
-				      DK_MAX_UNIT_SEGS, unit_size);
+		err = dk_make_unit_sg(src_bio, &src_iter, unit_size, &src);
 		if (err)
 			goto out;
-
-		err = dk_fill_unit_sg(dst_bio, &dst_iter, dst_sg,
-				      DK_MAX_UNIT_SEGS, unit_size);
+		if (src_bio == dst_bio) {
+			/* In-place decryption uses the same scatterlist. */
+			dst_iter = src_iter;
+			dun = dk_compute_dun(cc, rel_sector, unit_idx);
+			err = dk_do_skcipher_unit(cc, req, src.sg, src.sg,
+						  dun, encrypt);
+		} else {
+			err = dk_make_unit_sg(dst_bio, &dst_iter,
+					      unit_size, &dst);
+			if (!err) {
+				dun = dk_compute_dun(cc, rel_sector, unit_idx);
+				err = dk_do_skcipher_unit(cc, req, src.sg,
+							  dst.sg, dun, encrypt);
+				dk_release_unit_sg(&dst);
+			}
+		}
+		dk_release_unit_sg(&src);
 		if (err)
 			goto out;
-
-		dun = dk_compute_dun(cc, rel_sector, unit_idx);
-		err = dk_do_skcipher_unit(cc, req, src_sg, dst_sg, dun,
-					  encrypt);
-		if (err)
-			goto out;
-
 		unit_idx++;
 	}
 
-	if (src_iter.bi_size != 0 || dst_iter.bi_size != 0)
+	if (src_iter.bi_size || dst_iter.bi_size)
 		err = -EIO;
-
 out:
 	skcipher_request_free(req);
 	return err;
@@ -383,7 +415,7 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	io->clone_bio = NULL;
 	io->rel_sector = rel_sector;
 
-	if (bio_data_dir(bio) == WRITE) {
+	if (bio_op(bio) != REQ_OP_READ && bio_op(bio) != REQ_OP_WRITE) {\n\t\tkfree(io);\n\t\tbio->bi_error = -EOPNOTSUPP;\n\t\tbio_endio(bio);\n\t\treturn DM_MAPIO_SUBMITTED;\n\t}\n\n\tif (bio_op(bio) == REQ_OP_WRITE) {
 		INIT_WORK(&io->work, dk_write_work);
 		queue_work(cc->io_queue, &io->work);
 		return DM_MAPIO_SUBMITTED;
