@@ -28,6 +28,7 @@ python3 scripts/dm-default-key-xts-reference.py --output "$root/vectors" | tee "
 cp scripts/dm-default-key-gates.sh "$root/tests/gates.sh"
 cat > "$root/init" <<'INIT'
 #!/bin/sh
+echo '=== GATE_INIT_START ===' > /dev/console
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
@@ -47,7 +48,17 @@ dmesg | tail -100
 sync
 poweroff -f
 INIT
-chmod 755 "$root/init"
+sed -i 's/\r$//' "$root/init"
+chmod 0755 "$root/init"
+head -n 1 "$root/init" | od -An -tx1 -tc | tee "$out/init-shebang.txt"
+file -L "$root/bin/sh" "$root/sbin/dmsetup" "$root/sbin/losetup" > "$out/guest-binaries.txt" 2>&1 || true
+python3 - "$root/init" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+data = p.read_bytes()
+assert data.startswith(b"#!/bin/sh\n"), f"invalid /init shebang: {data[:24]!r}"
+assert p.stat().st_mode & 0o111, "/init not executable"
+PY
 # The rootfs is an initramfs; ensure its test output is captured via serial.
 (cd "$root" && find . -print0 | cpio --null -o -H newc 2>/dev/null | gzip -1) > "$out/gates-initramfs.cpio.gz"
 rc=0
@@ -57,6 +68,7 @@ timeout 150 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 -acc
   -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init panic=1' \
   > "$out/gates-serial.log" 2>&1 || rc=$?
 printf '%s\n' "$rc" > "$out/qemu-exit.txt"
+grep -Fq '=== GATE_INIT_START ===' "$out/gates-serial.log"
 grep -Fq '=== DM DEFAULT KEY GATES EXIT 0 ===' "$out/gates-serial.log"
 grep -Fq 'PASS gate1:' "$out/gates-serial.log"
 grep -Fq 'PASS gate2:' "$out/gates-serial.log"
