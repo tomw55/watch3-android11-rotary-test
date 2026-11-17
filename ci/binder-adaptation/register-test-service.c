@@ -45,7 +45,7 @@ int main(void) {
     obj.cookie=(binder_uintptr_t)0x4543484fULL;
     memcpy(data+n,&obj,sizeof(obj)); n+=sizeof(obj);
     put32(data,&n,0); /* allowIsolated=false */
-    put32(data,&n,0); /* dumpPriority=0 */
+    put32(data,&n,8); /* DUMP_FLAG_PRIORITY_DEFAULT */
     binder_size_t offset=object_offset;
     struct binder_transaction_data tx={0};
     tx.target.handle=0;
@@ -79,7 +79,8 @@ int main(void) {
                 if(reply.data_size>=4) {
                     uint32_t exception;
                     memcpy(&exception,(void *)(uintptr_t)reply.data.ptr.buffer,4);
-                    printf("REGISTER exception=%d\n",(int32_t)exception);
+                    printf("REGISTER exception=%d (0x%08x)\n",(int32_t)exception,exception);
+                    if(exception==0x80000001U) puts("REGISTER STATUS_UNKNOWN_TRANSACTION: check Android 11 IServiceManager transaction code and Parcel header");
                     if(exception==0) got_reply=1;
                 }
                 uint32_t freecmd=BC_FREE_BUFFER;
