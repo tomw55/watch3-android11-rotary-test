@@ -143,18 +143,38 @@ int main(void) {
   // Register a local Binder node using a separate process, then discover it
   // with the genuine Android 11 service CLI.
   pid_t registrar=-1;
+  int registrarpipe[2]={-1,-1};
   if(result==0) {
+    if(pipe2(registrarpipe,O_CLOEXEC|O_NONBLOCK)<0) {
+      perror("pipe2 registrar");
+      logmsg("FAIL registrar diagnostics pipe\n");
+      return 1;
+    }
     registrar=fork();
     if(registrar==0) {
+      close(registrarpipe[0]);
+      if(dup2(registrarpipe[1],1)<0 || dup2(registrarpipe[1],2)<0) _exit(126);
+      close(registrarpipe[1]);
       execl("/register-test-service","register-test-service",NULL);
       perror("exec register-test-service");
       _exit(127);
     }
+    close(registrarpipe[1]);
     if(registrar<0) {
       perror("fork register-test-service");
       logmsg("FAIL Android 11 test service registrar fork\\n");
     } else {
-      usleep(1000000);
+      for(int i=0;i<20;i++) {
+        char buf[2048];
+        ssize_t n;
+        while((n=read(registrarpipe[0],buf,sizeof(buf)-1))>0) {
+          buf[n]=0;
+          logmsg("REGISTRAR: ");
+          logmsg(buf);
+          if(buf[n-1]!='\n') logmsg("\n");
+        }
+        usleep(100000);
+      }
       int regstatus=0;
       if(waitpid(registrar,&regstatus,WNOHANG)==registrar)
         logmsg("FAIL Android 11 test service registrar exited\\n");
@@ -208,6 +228,8 @@ int main(void) {
           logmsg("FAIL Android 11 service list timed out\n");
         } else if(qresult==query && WIFEXITED(qstatus) && WEXITSTATUS(qstatus)==0 && saw_registry) {
           logmsg("PASS genuine Android 11 service list Binder registry query\n");
+          if(saw_test_service) logmsg("PASS Android 11 test service discovered in registry\n");
+          else logmsg("FAIL Android 11 test service missing from registry\n");
         } else {
           printf("FAIL Android 11 service list result=%ld status=%d registry=%d\\n",
                  (long)qresult,qstatus,saw_registry);
@@ -216,6 +238,7 @@ int main(void) {
       close(querypipe[0]);
     }
   }
+  if(registrarpipe[0]>=0) close(registrarpipe[0]);
   fflush(stdout);
   for(;;)pause();
 }
