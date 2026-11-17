@@ -1,9 +1,13 @@
 #include <android/binder_ibinder.h>
-#include <android/binder_manager.h>
 #include <android/binder_process.h>
 #include <android/binder_status.h>
 #include <cstdio>
 #include <unistd.h>
+
+/* The Android 11 platform exports this symbol from libbinder_ndk, but the
+ * standalone NDK omits the platform-only binder_manager.h declaration.
+ * Keep the exact C ABI declaration here rather than depending on that header. */
+extern "C" binder_exception_t AServiceManager_addService(AIBinder *binder, const char *instance);
 
 /* Native Binder service registration against Android 11 libbinder_ndk. */
 static void *on_create(void *args) { return args; }
