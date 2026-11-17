@@ -24,7 +24,7 @@ if (( license_rc != 0 )); then
   exit "$license_rc"
 fi
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
-  'system-images;android-30;google_apis;arm64-v8a' > "$out/sdk-install.log" 2>&1
+  'system-images;android-30;google_apis;arm64-v8a' 'ndk;23.2.8568313' > "$out/sdk-install.log" 2>&1
 image="$ANDROID_HOME/system-images/android-30/google_apis/arm64-v8a/system.img"
 test -s "$image"
 sha256sum "$image" > "$out/system-image.sha256"
@@ -184,5 +184,18 @@ if ! test -s "$contexts"; then
   echo "WARN Android 11 platform service contexts absent from image" >&2
   rm -f "$contexts"
 fi
+# Compile against the Android NDK Binder API, but link to the genuine
+# Android 11 runtime extracted from the emulator system partition.
+ndk="$ANDROID_HOME/ndk/23.2.8568313/toolchains/llvm/prebuilt/linux-x86_64/bin"
+"$ndk/aarch64-linux-android30-clang" -std=c11 -Wall -Wextra -Werror -O2 \\
+  "$PWD/ci/binder-adaptation/register-test-service-ndk.c" \\
+  -L "$out/guest/system/lib64" -lbinder_ndk \\
+  -Wl,--dynamic-linker=/system/bin/linker64 \\
+  -o "$out/guest/system/bin/register-test-service-ndk"
+readelf -d "$out/guest/system/bin/register-test-service-ndk" | tee "$out/ndk-registrar-dependencies.txt"
+# Ensure the runtime has every shared library the new executable requires.
+for lib in $(readelf -d "$out/guest/system/bin/register-test-service-ndk" | sed -n 's/.*Shared library: \\[\\([^]]*\\)\\].*/\\1/p'); do
+  test -s "$out/guest/system/lib64/$lib" || { echo "Missing NDK registrar library: $lib" >&2; exit 1; }
+done
 tar -C "$out/guest" -czf "$out/android11-servicemanager-guest.tar.gz" system
 sha256sum "$out/android11-servicemanager-guest.tar.gz" > "$out/guest-archive.sha256"
