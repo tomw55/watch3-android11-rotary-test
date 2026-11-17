@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <time.h>
@@ -138,6 +139,59 @@ int main(void) {
   } else {
     perror("waitpid servicemanager");
     logmsg("FAIL servicemanager waitpid\n");
+  }
+  // A separate genuine Android 11 process queries the service registry via Binder.
+  // The service CLI's "list" command uses libbinder and talks to servicemanager.
+  if(result==0) {
+    int querypipe[2]={-1,-1};
+    if(pipe2(querypipe,O_CLOEXEC|O_NONBLOCK)<0) {
+      perror("pipe2 Android service client");
+      logmsg("FAIL Android 11 service client pipe unavailable\n");
+    } else {
+      pid_t query=fork();
+      if(query==0) {
+        close(querypipe[0]);
+        if(dup2(querypipe[1],1)<0 || dup2(querypipe[1],2)<0) _exit(126);
+        close(querypipe[1]);
+        setenv("LD_LIBRARY_PATH","/system/lib64",1);
+        execl("/system/bin/service","service","list",NULL);
+        perror("exec Android service client");
+        _exit(127);
+      }
+      close(querypipe[1]);
+      if(query<0) {
+        perror("fork Android service client");
+        logmsg("FAIL Android 11 service client fork\n");
+      } else {
+        int qstatus=0;
+        pid_t qresult=0;
+        int saw_registry=0;
+        for(int i=0;i<50;i++) {
+          char buf[4096];
+          ssize_t n;
+          while((n=read(querypipe[0],buf,sizeof(buf)-1))>0) {
+            buf[n]=0;
+            logmsg("ANDROID SERVICE LIST: ");
+            logmsg(buf);
+            if(strstr(buf,"Found ") && strstr(buf," services:")) saw_registry=1;
+          }
+          qresult=waitpid(query,&qstatus,WNOHANG);
+          if(qresult!=0) break;
+          usleep(100000);
+        }
+        if(qresult==0) {
+          kill(query,SIGKILL);
+          waitpid(query,&qstatus,0);
+          logmsg("FAIL Android 11 service list timed out\n");
+        } else if(qresult==query && WIFEXITED(qstatus) && WEXITSTATUS(qstatus)==0 && saw_registry) {
+          logmsg("PASS genuine Android 11 service list Binder registry query\n");
+        } else {
+          printf("FAIL Android 11 service list result=%ld status=%d registry=%d\\n",
+                 (long)qresult,qstatus,saw_registry);
+        }
+      }
+      close(querypipe[0]);
+    }
   }
   fflush(stdout);
   for(;;)pause();
