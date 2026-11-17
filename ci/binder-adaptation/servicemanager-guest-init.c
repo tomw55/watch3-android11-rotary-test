@@ -140,6 +140,27 @@ int main(void) {
     perror("waitpid servicemanager");
     logmsg("FAIL servicemanager waitpid\n");
   }
+  // Register a local Binder node using a separate process, then discover it
+  // with the genuine Android 11 service CLI.
+  pid_t registrar=-1;
+  if(result==0) {
+    registrar=fork();
+    if(registrar==0) {
+      execl("/register-test-service","register-test-service",NULL);
+      perror("exec register-test-service");
+      _exit(127);
+    }
+    if(registrar<0) {
+      perror("fork register-test-service");
+      logmsg("FAIL Android 11 test service registrar fork\\n");
+    } else {
+      usleep(1000000);
+      int regstatus=0;
+      if(waitpid(registrar,&regstatus,WNOHANG)==registrar)
+        logmsg("FAIL Android 11 test service registrar exited\\n");
+      else logmsg("PASS Android 11 test service registrar running\\n");
+    }
+  }
   // A separate genuine Android 11 process queries the service registry via Binder.
   // The service CLI's "list" command uses libbinder and talks to servicemanager.
   if(result==0) {
@@ -166,6 +187,7 @@ int main(void) {
         int qstatus=0;
         pid_t qresult=0;
         int saw_registry=0;
+        int saw_test_service=0;
         for(int i=0;i<50;i++) {
           char buf[4096];
           ssize_t n;
@@ -174,6 +196,7 @@ int main(void) {
             logmsg("ANDROID SERVICE LIST: ");
             logmsg(buf);
             if(strstr(buf,"Found ") && strstr(buf," services:")) saw_registry=1;
+            if(strstr(buf,"watch3.test.echo")) saw_test_service=1;
           }
           qresult=waitpid(query,&qstatus,WNOHANG);
           if(qresult!=0) break;
