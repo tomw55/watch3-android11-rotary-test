@@ -95,6 +95,8 @@ timeout 180 qemu-system-aarch64 "${args[@]}" > "$out/serial.log" 2>&1 || rc=$?
 printf '%s\n' "$rc" > "$out/qemu-exit.txt"
 # Preserve full serial.log; extract BPF diagnostics before the noisy reboot tail.
 python3 "$(dirname "$0")/bpf-init-diagnostics.py" "$out" | tee "$out/bpf-init-diagnostics.txt"
+# Preserve early storage failures and Zygote/vold aborts separately from restart loops.
+python3 "$(dirname "$0")/storage-zygote-diagnostics.py" "$out" "${SAMSUNG_INIT_KERNEL%/*}/.config" | tee "$out/storage-zygote-summary.txt"
 # Correlate the observed exit with the kernel's *built* BPF feature set.
 if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
     config="${SAMSUNG_INIT_KERNEL%/*}/.config"
