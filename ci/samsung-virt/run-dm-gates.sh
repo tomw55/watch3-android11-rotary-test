@@ -9,11 +9,11 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root"/{proc,sys,dev,tmp,run,tests,vectors}
 # Alpine's host apk installs *aarch64* packages without running guest code.
 docker run --rm -v "$root:/guest" alpine:3.20 sh -ec '
-  apk --root /guest --arch aarch64 --initdb --no-scripts \
+  apk --root /guest --keys-dir /etc/apk/keys --arch aarch64 --initdb --no-scripts \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
     add alpine-baselayout busybox device-mapper util-linux coreutils
 '
-python3 -m pip install --user cryptography 2>&1 | tee "$out/vector-dependency.log"
+python3 -c 'from cryptography.hazmat.primitives.ciphers import Cipher' 2>&1 | tee "$out/vector-dependency.log"
 python3 scripts/dm-default-key-xts-reference.py --output "$root/vectors" | tee "$out/reference-generation.log"
 cp scripts/dm-default-key-gates.sh "$root/tests/gates.sh"
 cat > "$root/init" <<'INIT'
@@ -30,8 +30,8 @@ echo '=== DM DEFAULT KEY GATES BEGIN ==='
 dmsetup targets
 mkdir -p /tmp/dk
 export DK_TEST_DIR=/tmp/dk DK_VECTOR_DIR=/vectors
-sh /tests/gates.sh
-rc=$?
+rc=0
+sh /tests/gates.sh || rc=$?
 echo "=== DM DEFAULT KEY GATES EXIT $rc ==="
 dmesg | tail -100
 sync
