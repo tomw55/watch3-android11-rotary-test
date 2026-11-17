@@ -826,6 +826,36 @@ BINDER_REVIEW_V2
     sha256sum "$out/binder-security-context.patch" > "$out/binder-patch.sha256"
     git apply --check --verbose "$out/binder-security-context.patch" 2>&1 | tee "$out/binder-patch-check.log"
     git apply "$out/binder-security-context.patch"
+    # Diagnostic-only changes to the extracted QEMU copy.
+    python3 - <<'BINDER_TRACE'
+from pathlib import Path
+p = Path("drivers/android/binder.c")
+s = p.read_text()
+def add(anchor, suffix):
+    global s
+    if s.count(anchor) != 1:
+        raise SystemExit(f"expected one trace anchor: {anchor!r}")
+    s = s.replace(anchor, anchor + suffix)
+add('\t\tret = binder_ioctl_set_ctx_mgr(filp, &fbo);\n', '''
+		pr_info_ratelimited("binder context-manager register device=%s pid=%d secctx_requested=%d ret=%d\\n",
+				    proc->context->name, proc->pid,
+				    !!(fbo.flags & FLAT_BINDER_FLAG_TXN_SECURITY_CTX), ret);
+''')
+add('\t\ttrace_binder_transaction_received(t);\n', '''
+		if (cmd == BR_TRANSACTION_SEC_CTX || cmd == BR_REPLY)
+			pr_info_ratelimited("binder context-manager delivery device=%s pid=%d txn=%d command=%s sync=%d\\n",
+					    proc->context->name, proc->pid, t->debug_id,
+					    cmd == BR_REPLY ? "reply" : "secctx",
+					    !(t->flags & TF_ONE_WAY));
+''')
+add('\ttrace_binder_transaction(reply, t, target_node);\n', '''
+	if (reply && in_reply_to->security_ctx)
+		pr_info_ratelimited("binder context-manager reply attempt device=%s pid=%d request=%d reply=%d\\n",
+				    proc->context->name, proc->pid,
+				    in_reply_to->debug_id, t->debug_id);
+''')
+p.write_text(s)
+BINDER_TRACE
     stage=config
 fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
