@@ -110,3 +110,47 @@ grep -q 'NEEDED' "$out/dynamic-dependencies.txt"
 sha256sum "$out/servicemanager" > "$out/servicemanager.sha256"
 cat "$out/dynamic-dependencies.txt"
 echo 'PASS Android 11 ARM64 servicemanager ELF extracted; execution NOT yet tested'
+
+# Export the Android dynamic linker and recursive ELF dependencies for a QEMU guest.
+# This uses the same extracted Android 11 system image as the executable.
+mkdir -p "$out/guest/system/bin" "$out/guest/system/lib64"
+cp "$out/servicemanager" "$out/guest/system/bin/servicemanager"
+python3 - "$out/system.ext4.img" "$out/guest" <<'PY'
+import os, pathlib, re, subprocess, sys
+image, root = sys.argv[1:]
+root = pathlib.Path(root)
+pending = ["/system/bin/linker64", "/system/bin/servicemanager"]
+seen = set()
+missing = []
+while pending:
+    path = pending.pop(0)
+    if path in seen: continue
+    seen.add(path)
+    relative = path.removeprefix("/system/")
+    dest = root / "system" / relative
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(["debugfs", "-R", f"dump {path} {dest}", image],
+                          capture_output=True, text=True)
+    if proc.returncode or not dest.is_file() or not dest.stat().st_size:
+        # ext4 root may itself be the system partition.
+        proc = subprocess.run(["debugfs", "-R", f"dump /{relative} {dest}", image],
+                              capture_output=True, text=True)
+    if proc.returncode or not dest.is_file() or not dest.stat().st_size:
+        missing.append(path)
+        continue
+    hdr = subprocess.run(["readelf", "-h", str(dest)], capture_output=True, text=True)
+    if "AArch64" not in hdr.stdout:
+        raise RuntimeError(f"Not AArch64: {path}")
+    dyn = subprocess.run(["readelf", "-d", str(dest)], capture_output=True, text=True)
+    for lib in re.findall(r"Shared library: \\[([^]]+)\\]", dyn.stdout):
+        dep = "/system/lib64/" + lib
+        if dep not in seen and dep not in pending:
+            pending.append(dep)
+    print(f"EXTRACTED {path}", flush=True)
+if missing:
+    raise RuntimeError("Missing Android shared libraries: " + ", ".join(missing))
+(root.parent / "guest-manifest.txt").write_text("\\n".join(sorted(seen)) + "\\n")
+print("PASS Android 11 recursive ELF dependencies packaged", flush=True)
+PY
+tar -C "$out/guest" -czf "$out/android11-servicemanager-guest.tar.gz" system
+sha256sum "$out/android11-servicemanager-guest.tar.gz" > "$out/guest-archive.sha256"
