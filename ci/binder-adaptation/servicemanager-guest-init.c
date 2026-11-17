@@ -173,6 +173,19 @@ int main(void) {
           logmsg(buf);
           if(buf[n-1]!='\n') logmsg("\n");
         }
+        if(logfd>=0) {
+          char logbuf[4096];
+          ssize_t ln;
+          while((ln=recv(logfd,logbuf,sizeof(logbuf),MSG_DONTWAIT))>0) {
+            logmsg("ANDROID REGISTRATION LOG: ");
+            for(ssize_t k=0;k<ln;k++) {
+              unsigned char c=(unsigned char)logbuf[k];
+              char out=(c>=32 && c<127)?(char)c:' ';
+              if(write(1,&out,1)<0) break;
+            }
+            logmsg("\\n");
+          }
+        }
         usleep(100000);
       }
       int regstatus=0;
