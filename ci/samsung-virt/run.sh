@@ -43,6 +43,20 @@ if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
         find "$repo/patches/ci-compat" -maxdepth 1 -name '*.patch' -printf '%f\\n' | sort
     } > "$out/dm-default-key-stage1-api-preflight.txt" 2>&1
 fi
+# Preserve full Samsung DM completion-path bodies for review before adding
+# a target that assumes responsibility for an incoming DM clone bio.
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    {
+        echo '=== Samsung dm.c: clone_endio ==='
+        sed -n '/^static .*clone_endio(/,/^}/p' drivers/md/dm.c
+        echo '=== Samsung dm.c: __map_bio ==='
+        sed -n '/^static .*__map_bio(/,/^}/p' drivers/md/dm.c
+        echo '=== Samsung dm.c: dec_pending ==='
+        sed -n '/^static .*dec_pending(/,/^}/p' drivers/md/dm.c
+        echo '=== Relevant io_count and error paths with context ==='
+        grep -n -C 7 -E 'DM_MAPIO_SUBMITTED|DM_MAPIO_REMAPPED|clone_endio|dec_pending\\(|io_count|bi_error' drivers/md/dm.c | head -350 || true
+    } > "$out/dm-default-key-dm-completion-contract.txt" 2>&1
+fi
 # Record source-level dm-default-key support before attempting config changes.
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     {
