@@ -60,8 +60,9 @@ with open(src, 'rb') as f:
             continue
         first, last = struct.unpack_from('<QQ', e, 32)
         name = e[56:128].decode('utf-16-le', 'ignore').rstrip('\\x00')
+        name = name.replace('\\x00', '')
         print(f'GPT partition {i+1}: {name} sectors {first}-{last}')
-        if name.lower() in ('system', 'system_a'):
+        if name.lower().replace('\\x00', '') in ('system', 'system_a', 'super'):
             candidates.insert(0, (first, last, name))
         else:
             candidates.append((first, last, name))
@@ -82,7 +83,7 @@ with open(src, 'rb') as f:
                     remaining -= len(data)
             break
     else:
-        raise RuntimeError('No ext4 partition found in GPT disk')
+        raise RuntimeError('No direct ext4 partition found; likely Android dynamic super partition')
 PY
 file "$out/system.ext4.img" | tee "$out/filesystem-format.txt"
 debugfs -R 'dump /system/bin/servicemanager servicemanager-binary/servicemanager' \
