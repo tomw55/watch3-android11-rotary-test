@@ -52,7 +52,7 @@ int main(void) {
   int childpipe[2]={-1,-1};
   if(pipe2(childpipe,O_CLOEXEC|O_NONBLOCK)<0) {
     perror("pipe2 servicemanager diagnostics");
-    logmsg("FAIL servicemanager diagnostic pipe unavailable\\n");
+    logmsg("FAIL servicemanager diagnostic pipe unavailable\n");
     return 1;
   }
   pid_t child=fork();
@@ -78,7 +78,7 @@ int main(void) {
         logmsg("SERVICEMANAGER STDOUT/ERR: ");
         // Preserve output exactly, including fatal libc and linker diagnostics.
         logmsg(buf);
-        if(buf[n-1]!='\\n') logmsg("\\n");
+        if(buf[n-1]!='\n') logmsg("\n");
       }
     }
     if(logfd>=0) {
@@ -106,7 +106,7 @@ int main(void) {
       buf[n]=0;
       logmsg("SERVICEMANAGER STDOUT/ERR: ");
       logmsg(buf);
-      if(buf[n-1]!='\\n') logmsg("\\n");
+      if(buf[n-1]!='\n') logmsg("\n");
     }
   }
   close(childpipe[0]);
