@@ -38,6 +38,11 @@ else
   echo 'INFO gate2: mapped-device BLKFLSBUF unavailable (non-fatal)'
   cat "$DK_TEST_DIR/gate2-flush.err"
 fi
+# INFO-level driver traces may be hidden from the serial console; dump the
+# kernel ring buffer explicitly after writeback, without changing AES-XTS.
+sync
+echo 'Gate 2 kernel write-path diagnostics (dmesg):'
+dmesg | grep -E 'dk_test (map_write|write_submit|write_endio)|device-mapper: default-key' || :
 echo 'PASS gate2 diagnostic: mapped write and fsync completed; ciphertext KAT follows'
 # Force the backing device's buffered state to disk before validating raw bytes.
 sync
