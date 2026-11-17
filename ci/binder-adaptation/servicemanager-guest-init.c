@@ -155,8 +155,9 @@ int main(void) {
       close(registrarpipe[0]);
       if(dup2(registrarpipe[1],1)<0 || dup2(registrarpipe[1],2)<0) _exit(126);
       close(registrarpipe[1]);
-      execl("/register-test-service","register-test-service",NULL);
-      perror("exec register-test-service");
+      setenv("LD_LIBRARY_PATH","/system/lib64",1);
+      execl("/system/bin/register-test-service-ndk","register-test-service-ndk",NULL);
+      perror("exec register-test-service-ndk");
       _exit(127);
     }
     close(registrarpipe[1]);
