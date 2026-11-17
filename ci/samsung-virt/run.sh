@@ -27,6 +27,22 @@ if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
         grep -n 'dm_set_target_max_io_len' include/linux/device-mapper.h drivers/md/dm-crypt.c || true
     } > "$out/dm-crypt-api-inspection.txt" 2>&1
 fi
+# Capture the actual Samsung bio ownership and crypto interfaces before any
+# dm-default-key implementation is allowed to advertise a working target.
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    {
+        echo '=== Samsung dm-crypt bio lifecycle and crypto primitives ==='
+        grep -nE 'bio_clone_fast|bio_alloc_bioset|bio_endio|bi_end_io|bi_private|generic_make_request|crypto_(alloc_skcipher|skcipher_encrypt|skcipher_decrypt)|skcipher_request_alloc|mempool_create_page_pool|alloc_workqueue|dm_target_offset' drivers/md/dm-crypt.c || true
+        echo '=== Samsung device-mapper bio ownership conventions ==='
+        grep -nE 'DM_MAPIO_SUBMITTED|DM_MAPIO_REMAPPED|DM_MAPIO_KILL|bio_clone_fast|bio_endio|dm_target_offset' drivers/md/dm.c | head -110 || true
+        echo '=== Relevant declarations ==='
+        grep -nE 'bio_clone_fast|bio_alloc_bioset|bio_endio|generic_make_request' include/linux/bio.h include/linux/blkdev.h || true
+        grep -nE 'crypto_alloc_skcipher|crypto_skcipher_encrypt|crypto_skcipher_decrypt' include/crypto/skcipher.h || true
+        grep -nE 'dm_get_device|dm_put_device|dm_target_offset|dm_set_target_max_io_len' include/linux/device-mapper.h || true
+        echo '=== QEMU-only patch availability ==='
+        find "$repo/patches/ci-compat" -maxdepth 1 -name '*.patch' -printf '%f\\n' | sort
+    } > "$out/dm-default-key-stage1-api-preflight.txt" 2>&1
+fi
 # Record source-level dm-default-key support before attempting config changes.
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     {
