@@ -24,7 +24,7 @@ if (( license_rc != 0 )); then
   exit "$license_rc"
 fi
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
-  'system-images;android-30;google_apis;arm64-v8a' 'ndk;23.2.8568313' > "$out/sdk-install.log" 2>&1
+  'system-images;android-30;google_apis;arm64-v8a' 'ndk;27.2.12479018' > "$out/sdk-install.log" 2>&1
 image="$ANDROID_HOME/system-images/android-30/google_apis/arm64-v8a/system.img"
 test -s "$image"
 sha256sum "$image" > "$out/system-image.sha256"
@@ -186,9 +186,9 @@ if ! test -s "$contexts"; then
 fi
 # Compile against the Android NDK Binder API, but link to the genuine
 # Android 11 runtime extracted from the emulator system partition.
-ndk="$ANDROID_HOME/ndk/23.2.8568313/toolchains/llvm/prebuilt/linux-x86_64/bin"
-"$ndk/aarch64-linux-android30-clang" -std=c11 -Wall -Wextra -Werror -O2 \
-  "$PWD/ci/binder-adaptation/register-test-service-ndk.c" \
+ndk="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+"$ndk/aarch64-linux-android30-clang++" -std=c++17 -Wall -Wextra -Werror -O2 \
+  "$PWD/ci/binder-adaptation/register-test-service-ndk.cpp" \
   -L "$out/guest/system/lib64" -lbinder_ndk \
   -Wl,--dynamic-linker=/system/bin/linker64 \
   -o "$out/guest/system/bin/register-test-service-ndk"
