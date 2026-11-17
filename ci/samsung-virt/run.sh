@@ -116,6 +116,9 @@ stage=initramfs
 mkdir -p "$work/uapi/linux/android"
 cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
 probe_source="$repo/ci/samsung-virt/probe.c"
+if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    probe_source="$repo/ci/binder-adaptation/servicemanager-guest-init.c"
+fi
 probe_flags=()
 if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
     [[ -n ${BINDER_STAGE1_PATCH:-} && -n ${BINDER_STAGE2_SCRIPT:-} ]] || {
@@ -135,6 +138,18 @@ dir /sys 755 0 0
 file /init $work/init 755 0 0
 file /test.policy $work/test.policy 644 0 0
 LIST
+if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    tar -tzf "$SERVICEMANAGER_GUEST_TAR" | grep -Fxq 'system/bin/servicemanager'
+    mkdir -p "$work/android-guest"
+    tar -xzf "$SERVICEMANAGER_GUEST_TAR" -C "$work/android-guest"
+    while IFS= read -r -d '' guestfile; do
+        guestpath="${guestfile#"$work/android-guest"}"
+        echo "file $guestpath $guestfile 755 0 0" >> "$work/initramfs.list"
+    done < <(find "$work/android-guest" -type f -print0)
+    for guestdir in /system /system/bin /system/lib64; do
+        sed -i "1i dir $guestdir 755 0 0" "$work/initramfs.list"
+    done
+fi
 "$work/gen_init_cpio" "$work/initramfs.list" > "$out/initramfs.cpio"
 cp "$work/test.policy" "$out/"
 (cd "$out" && sha256sum Image System.map config.final initramfs.cpio test.policy > SHA256SUMS)
@@ -147,6 +162,15 @@ timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
     -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' > "$out/serial.log" 2>&1 || rc=$?
 printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
+if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    grep -Fq 'PASS guest servicemanager init started' "$out/serial.log"
+    grep -Fq 'RESULT real Android 11 servicemanager' "$out/serial.log" || {
+        echo 'Real servicemanager did not exit; inspect serial log for whether it remained running' >&2
+        exit 1
+    }
+    stage=complete
+    exit 0
+fi
 for marker in 'PASS guest init started' 'PASS /dev/binder protocol=' \
     'PASS /dev/hwbinder protocol=' 'PASS /dev/vndbinder protocol=' \
     'PASS Binder transaction client=' 'PASS SELinux v30 load enforcing allow and denial' \
