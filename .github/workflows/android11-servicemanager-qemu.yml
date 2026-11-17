@@ -6,6 +6,7 @@ on:
       - '.github/workflows/android11-servicemanager-qemu.yml'
       - 'ci/binder-adaptation/acquire-servicemanager.sh'
       - 'ci/binder-adaptation/servicemanager-guest-init.c'
+      - 'ci/binder-adaptation/register-test-service.c'
       - 'ci/samsung-virt/run.sh'
   workflow_dispatch:
 permissions:
