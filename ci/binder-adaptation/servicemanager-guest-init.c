@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <time.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,14 @@ int main(void) {
   } else {
     logmsg("PASS epoll_create1 available in QEMU guest\n");
     close(epfd);
+  }
+  int timerfd=timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC);
+  if(timerfd<0) {
+    perror("timerfd_create");
+    logmsg("FAIL timerfd_create unavailable in QEMU guest\n");
+  } else {
+    logmsg("PASS timerfd_create available in QEMU guest\n");
+    close(timerfd);
   }
   mkdir("/dev/binderfs",0755);
   int fd=open("/dev/binder",O_RDWR);
