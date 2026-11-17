@@ -12,6 +12,21 @@ curl -fL --retry 3 -o source.zip \
 echo '1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f  source.zip' | sha256sum -c - | tee "$out/source-hash.txt"
 unzip -q source.zip
 cd kernel_samsung_galileo-master
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    {
+        echo '=== dm-crypt 4096-byte support and IV handling ==='
+        grep -nE 'sector_size|sector_shift|crypt_iv_plain64_gen|crypt_ctr_optional|crypt_convert_block_skcipher' drivers/md/dm-crypt.c || true
+        echo '=== crypt_iv_plain64_gen function ==='
+        sed -n '/^static .*crypt_iv_plain64_gen(/,/^}/p' drivers/md/dm-crypt.c
+        echo '=== crypt_ctr_optional function ==='
+        sed -n '/^static .*crypt_ctr_optional(/,/^}/p' drivers/md/dm-crypt.c
+        echo '=== crypt_target declaration and linkage ==='
+        grep -n -B 3 -A 35 'crypt_target = ' drivers/md/dm-crypt.c || true
+        echo '=== device-mapper target API ==='
+        grep -n -A 75 '^struct target_type {' include/linux/device-mapper.h || true
+        grep -n 'dm_set_target_max_io_len' include/linux/device-mapper.h drivers/md/dm-crypt.c || true
+    } > "$out/dm-crypt-api-inspection.txt" 2>&1
+fi
 # Record source-level dm-default-key support before attempting config changes.
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     {
