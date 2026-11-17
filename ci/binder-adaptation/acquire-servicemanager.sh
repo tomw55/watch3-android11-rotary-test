@@ -136,8 +136,24 @@ while pending:
         proc = subprocess.run(["debugfs", "-R", f"dump /{relative} {dest}", image],
                               capture_output=True, text=True)
     if proc.returncode or not dest.is_file() or not dest.stat().st_size:
-        missing.append(path)
-        continue
+        # Android 11 uses symlinks from /system/bin/linker64 and
+        # /system/lib64/{libc,libm,libdl}.so to runtime APEX files.
+        # The early-boot bootstrap copies are real ELF files on /system.
+        fallback = []
+        if path == "/system/bin/linker64":
+            fallback = ["/bin/bootstrap/linker64", "/system/bin/bootstrap/linker64"]
+        elif path.startswith("/system/lib64/"):
+            lib = path.rsplit("/", 1)[-1]
+            fallback = ["/lib64/bootstrap/" + lib, "/system/lib64/bootstrap/" + lib]
+        for source in fallback:
+            proc = subprocess.run(["debugfs", "-R", f"dump {source} {dest}", image],
+                                  capture_output=True, text=True)
+            if proc.returncode == 0 and dest.is_file() and dest.stat().st_size:
+                print(f"BOOTSTRAP {source} -> {path}", flush=True)
+                break
+        else:
+            missing.append(path)
+            continue
     hdr = subprocess.run(["readelf", "-h", str(dest)], capture_output=True, text=True)
     if "AArch64" not in hdr.stdout:
         raise RuntimeError(f"Not AArch64: {path}")
