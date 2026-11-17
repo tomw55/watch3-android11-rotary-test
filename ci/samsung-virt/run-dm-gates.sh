@@ -7,17 +7,22 @@ mkdir -p "$out"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 mkdir -p "$root"/{proc,sys,dev,tmp,run,tests,vectors}
-# Alpine's host apk installs *aarch64* packages without running guest code.
-docker run --rm -v "$root:/guest" alpine:3.20 sh -ec '
-  mkdir -p /guest/etc/apk/keys
-  cp /etc/apk/keys/*.rsa.pub /guest/etc/apk/keys/
-  ls -l /guest/etc/apk/keys/*.rsa.pub
-  apk --root /guest --arch aarch64 --initdb --no-scripts \
-    --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
-    add alpine-baselayout busybox device-mapper util-linux coreutils
-  test -x /guest/bin/busybox
-  test -x /guest/sbin/dmsetup
-'
+# Bootstrap a verified Ubuntu ARM64 rootfs using the runner's Ubuntu archive
+# signing key. debootstrap verifies Release/InRelease signatures and package hashes.
+# This avoids cross-architecture apk keyring ambiguity entirely.
+sudo debootstrap --foreign --arch=arm64 --variant=minbase \
+  --include=busybox-static,dmsetup,util-linux,coreutils,libc-bin \
+  jammy "$root" http://ports.ubuntu.com/ubuntu-ports/ \
+  > "$out/debootstrap.log" 2>&1
+# Run the ARM64 second stage with QEMU user emulation and binfmt_misc.
+sudo cp /usr/bin/qemu-aarch64-static "$root/usr/bin/qemu-aarch64-static"
+sudo chroot "$root" /debootstrap/debootstrap --second-stage \
+  >> "$out/debootstrap.log" 2>&1
+test -x "$root/bin/busybox" || test -x "$root/usr/bin/busybox"
+test -x "$root/sbin/dmsetup" || test -x "$root/usr/sbin/dmsetup"
+# No QEMU user emulator is needed inside the final kernel-booted initramfs.
+sudo rm -f "$root/usr/bin/qemu-aarch64-static"
+sudo chown -R "$(id -u):$(id -g)" "$root"
 python3 -c 'from cryptography.hazmat.primitives.ciphers import Cipher' 2>&1 | tee "$out/vector-dependency.log"
 python3 scripts/dm-default-key-xts-reference.py --output "$root/vectors" | tee "$out/reference-generation.log"
 cp scripts/dm-default-key-gates.sh "$root/tests/gates.sh"
