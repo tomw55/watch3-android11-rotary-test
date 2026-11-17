@@ -165,7 +165,7 @@ while pending:
     print(f"EXTRACTED {path}", flush=True)
 if missing:
     raise RuntimeError("Missing Android shared libraries: " + ", ".join(missing))
-(root.parent / "guest-manifest.txt").write_text("\\n".join(sorted(seen)) + "\\n")
+(root.parent / "guest-manifest.txt").write_text("\n".join(sorted(seen)) + "\n")
 print("PASS Android 11 servicemanager and service client ELF dependencies packaged", flush=True)
 PY
 # Android's servicemanager requires the platform SELinux service label map.
@@ -194,7 +194,7 @@ ndk="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
   -o "$out/guest/system/bin/register-test-service-ndk"
 readelf -d "$out/guest/system/bin/register-test-service-ndk" | tee "$out/ndk-registrar-dependencies.txt"
 # Ensure the runtime has every shared library the new executable requires.
-for lib in $(readelf -d "$out/guest/system/bin/register-test-service-ndk" | sed -n 's/.*Shared library: \\[\\([^]]*\\)\\].*/\\1/p'); do
+for lib in $(readelf -d "$out/guest/system/bin/register-test-service-ndk" | awk -F'[][]' '/Shared library:/ {print $2}'); do
   test -s "$out/guest/system/lib64/$lib" || { echo "Missing NDK registrar library: $lib" >&2; exit 1; }
 done
 tar -C "$out/guest" -czf "$out/android11-servicemanager-guest.tar.gz" system
