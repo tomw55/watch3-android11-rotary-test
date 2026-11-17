@@ -26,6 +26,21 @@ if ! cmp -s "$DK_TEST_DIR/cipher.bin" "$DK_VECTOR_DIR/xts-offset16-4096.bin"; th
   echo 'FAIL gate2: raw ciphertext differs from independent AES-XTS reference' >&2; exit 1
 fi
 echo 'PASS gate2: AES-256-XTS 4KiB offset16 DUN2 ciphertext'
+# Constructor rejection checks. These exercise ctr() independently of data I/O.
+expect_reject() {
+  name="$1"; shift
+  if printf '%s\n' "$*" | dmsetup create "$name" 2>"$DK_TEST_DIR/$name.err"; then
+    dmsetup remove "$name" || :
+    echo "FAIL constructor: $name unexpectedly accepted" >&2
+    exit 1
+  fi
+  echo "PASS constructor rejection: $name"
+}
+expect_reject dk_bad_iv "0 512 default-key AES-256-XTS $key 4 $loop 0 2 sector_size:4096 iv_large_sectors"
+expect_reject dk_bad_start "0 512 default-key AES-256-XTS $key 0 $loop 4 2 sector_size:4096 iv_large_sectors"
+expect_reject dk_bad_sector "0 512 default-key AES-256-XTS $key 0 $loop 0 2 sector_size:512 iv_large_sectors"
+expect_reject dk_bad_ivmode "0 512 default-key AES-256-XTS $key 0 $loop 0 1 sector_size:4096"
+echo 'PASS constructor rejection suite'
 # Multi-sector plaintext test, using distinct 4KiB blocks and nonzero sectors.
 dd if=/dev/urandom of="$DK_TEST_DIR/multi-plain.bin" bs=4096 count=8 2>/dev/null
 dd if="$DK_TEST_DIR/multi-plain.bin" of=/dev/mapper/dk_test bs=4096 seek=1 count=8 conv=notrunc 2>/dev/null
