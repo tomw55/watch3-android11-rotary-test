@@ -16,7 +16,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc libssl-dev xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm gcc-aarch64-linux-gnu checkpolicy python3-cryptography
+          sudo apt-get install -y bc libssl-dev xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm gcc-aarch64-linux-gnu checkpolicy python3-cryptography debootstrap qemu-user-static binfmt-support ubuntu-keyring
       - name: Compile Samsung 4.9 integration kernel
         run: |
           mkdir -p samsung-virt-evidence
