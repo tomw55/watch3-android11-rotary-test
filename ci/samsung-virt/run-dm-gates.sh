@@ -46,7 +46,8 @@ sh /tests/gates.sh || rc=$?
 echo "=== DM DEFAULT KEY GATES EXIT $rc ==="
 dmesg | tail -100
 sync
-poweroff -f
+/bin/busybox poweroff -f || { echo o > /proc/sysrq-trigger; }
+while :; do sleep 1; done
 INIT
 sed -i 's/\r$//' "$root/init"
 chmod 0755 "$root/init"
