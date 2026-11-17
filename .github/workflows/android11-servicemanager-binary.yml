@@ -22,7 +22,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install image inspection tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq android-sdk-libsparse-utils android-sdk-liblp-utils e2fsprogs unzip
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip
       - name: Extract actual Android 11 ARM64 servicemanager executable
         run: bash ci/binder-adaptation/acquire-servicemanager.sh
       - name: Upload binary and dependency evidence
