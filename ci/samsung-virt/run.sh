@@ -139,7 +139,8 @@ file /init $work/init 755 0 0
 file /test.policy $work/test.policy 644 0 0
 LIST
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
-    tar -tzf "$SERVICEMANAGER_GUEST_TAR" | grep -Fxq 'system/bin/servicemanager'
+    tar -tzf "$SERVICEMANAGER_GUEST_TAR" > "$work/guest-archive-files.txt"
+    grep -Fxq 'system/bin/servicemanager' "$work/guest-archive-files.txt"
     mkdir -p "$work/android-guest"
     tar -xzf "$SERVICEMANAGER_GUEST_TAR" -C "$work/android-guest"
     while IFS= read -r -d '' guestfile; do
