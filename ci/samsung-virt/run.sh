@@ -81,132 +81,286 @@ fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     stage=binder_backport_check
     # Upstream ec74136ded792deed80780a2f8baf3521eeb72f9, Todd Kjos.
-    # Trial only: verify the complete patch before changing the source tree.
-    cat > "$out/binder-security-context.patch" <<'BINDER_UPSTREAM_PATCH'
+    # Samsung-specific review v2; apply only to the disposable integration tree.
+    cat > "$out/binder-security-context.patch" <<'BINDER_REVIEW_V2'
 diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index eb11e13..c6d0901 100644
 --- a/drivers/android/binder.c
 +++ b/drivers/android/binder.c
-@@ -329,6 +329,8 @@ struct binder_error {
-  *                        (invariant after initialized)
-  * @min_priority:         minimum scheduling priority
-  *                        (invariant after initialized)
-+ * @txn_security_ctx:     require sender's security context
-+ *                        (invariant after initialized)
-  * @async_todo:           list of async work items
-  *                        (protected by @proc->inner_lock)
-  *
-@@ -365,6 +367,7 @@ struct binder_node {
- 		 * invariant after initialization
- 		 */
+@@ -398,6 +398,7 @@ struct binder_node {
+ 		u8 sched_policy:2;
+ 		u8 inherit_rt:1;
  		u8 accept_fds:1;
 +		u8 txn_security_ctx:1;
  		u8 min_priority;
  	};
  	bool has_async_transaction;
-@@ -615,6 +618,7 @@ struct binder_transaction {
- 	long	saved_priority;
+@@ -544,6 +545,8 @@ struct binder_priority {
+  * Bookkeeping structure for binder processes
+  */
+ struct binder_proc {
++	/* Pinned for the lifetime of this Binder file. */
++	const struct cred *cred;
+ 	struct hlist_node proc_node;
+ 	struct rb_root threads;
+ 	struct rb_root nodes;
+@@ -653,6 +656,7 @@ struct binder_transaction {
+ 	struct binder_priority	saved_priority;
+ 	bool    set_priority_called;
  	kuid_t	sender_euid;
- 	struct list_head fd_fixups;
 +	binder_uintptr_t security_ctx;
  	/**
  	 * @lock:  protects @from, @to_proc, and @to_thread
  	 *
-@@ -1152,6 +1156,7 @@ static struct binder_node *binder_init_node_ilocked(
- 	node->work.type = BINDER_WORK_NODE;
- 	node->min_priority = flags & FLAT_BINDER_FLAG_PRIORITY_MASK;
+@@ -1302,6 +1306,7 @@ static struct binder_node *binder_init_node_ilocked(
+ 		FLAT_BINDER_FLAG_SCHED_POLICY_SHIFT;
+ 	node->min_priority = to_kernel_prio(node->sched_policy, priority);
  	node->accept_fds = !!(flags & FLAT_BINDER_FLAG_ACCEPTS_FDS);
 +	node->txn_security_ctx = !!(flags & FLAT_BINDER_FLAG_TXN_SECURITY_CTX);
+ 	node->inherit_rt = !!(flags & FLAT_BINDER_FLAG_INHERIT_RT);
  	spin_lock_init(&node->lock);
  	INIT_LIST_HEAD(&node->work.entry);
- 	INIT_LIST_HEAD(&node->async_todo);
-@@ -2778,6 +2783,8 @@ static void binder_transaction(struct binder_proc *proc,
+@@ -2404,7 +2409,7 @@ static int binder_translate_binder(struct flat_binder_object *fp,
+ 		ret = -EINVAL;
+ 		goto done;
+ 	}
+-	if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
++	if (security_binder_transfer_binder(proc->cred, target_proc->cred)) {
+ 		ret = -EPERM;
+ 		goto done;
+ 	}
+@@ -2450,7 +2455,7 @@ static int binder_translate_handle(struct flat_binder_object *fp,
+ 				  proc->pid, thread->pid, fp->handle);
+ 		return -EINVAL;
+ 	}
+-	if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
++	if (security_binder_transfer_binder(proc->cred, target_proc->cred)) {
+ 		ret = -EPERM;
+ 		goto done;
+ 	}
+@@ -2534,7 +2539,7 @@ static int binder_translate_fd(int fd,
+ 		ret = -EBADF;
+ 		goto err_fget;
+ 	}
+-	ret = security_binder_transfer_file(proc->tsk, target_proc->tsk, file);
++	ret = security_binder_transfer_file(proc->cred, target_proc->cred, file);
+ 	if (ret < 0) {
+ 		ret = -EPERM;
+ 		goto err_security;
+@@ -2805,6 +2810,11 @@ static void binder_transaction(struct binder_proc *proc,
  	binder_size_t last_fixup_min_off = 0;
  	struct binder_context *context = proc->context;
  	int t_debug_id = atomic_inc_return(&binder_last_id);
 +	char *secctx = NULL;
-+	u32 secctx_sz = 0;
++	u32 secctx_len = 0;
++	size_t alloc_extra = extra_buffers_size;
++	size_t context_space = 0;
++	size_t data_aligned, offsets_aligned;
  
  	e = binder_transaction_log_add(&binder_transaction_log);
  	e->debug_id = t_debug_id;
-@@ -3020,6 +3027,20 @@ static void binder_transaction(struct binder_proc *proc,
- 	t->flags = tr->flags;
- 	t->priority = task_nice(current);
+@@ -2913,8 +2923,8 @@ static void binder_transaction(struct binder_proc *proc,
+ 			goto err_dead_binder;
+ 		}
+ 		e->to_node = target_node->debug_id;
+-		if (security_binder_transaction(proc->tsk,
+-						target_proc->tsk) < 0) {
++		if (security_binder_transaction(proc->cred,
++						target_proc->cred) < 0) {
+ 			return_error = BR_FAILED_REPLY;
+ 			return_error_param = -EPERM;
+ 			return_error_line = __LINE__;
+@@ -3005,7 +3015,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 		t->from = thread;
+ 	else
+ 		t->from = NULL;
+-	t->sender_euid = task_euid(proc->tsk);
++	t->sender_euid = proc->cred->euid;
+ 	t->to_proc = target_proc;
+ 	t->to_thread = target_thread;
+ 	t->code = tr->code;
+@@ -3020,10 +3030,39 @@ static void binder_transaction(struct binder_proc *proc,
+ 		t->priority = target_proc->default_priority;
+ 	}
  
 +	if (target_node && target_node->txn_security_ctx) {
 +		u32 secid;
 +
-+		security_task_getsecid(proc->tsk, &secid);
-+		ret = security_secid_to_secctx(secid, &secctx, &secctx_sz);
-+		if (ret) {
-+			return_error = BR_FAILED_REPLY;
-+			return_error_param = ret;
-+			return_error_line = __LINE__;
-+			goto err_get_secctx_failed;
++		security_cred_getsecid(proc->cred, &secid);
++		ret = security_secid_to_secctx(secid, &secctx, &secctx_len);
++		if (ret)
++			goto err_secctx;
++		if (!secctx || !secctx_len || !IS_ALIGNED(extra_buffers_size, sizeof(u64)) ||
++		    secctx_len > SIZE_MAX - (sizeof(u64) - 1)) {
++			ret = -EINVAL;
++			goto err_secctx;
 +		}
-+		extra_buffers_size += ALIGN(secctx_sz, sizeof(u64));
++		context_space = ALIGN((size_t)secctx_len, sizeof(u64));
++		if (alloc_extra > SIZE_MAX - context_space ||
++		    tr->data_size > SIZE_MAX - (sizeof(void *) - 1) ||
++		    tr->offsets_size > SIZE_MAX - (sizeof(void *) - 1)) {
++			ret = -EOVERFLOW;
++			goto err_secctx;
++		}
++		alloc_extra += context_space;
++		data_aligned = ALIGN(tr->data_size, sizeof(void *));
++		offsets_aligned = ALIGN(tr->offsets_size, sizeof(void *));
++		if (data_aligned > SIZE_MAX - offsets_aligned ||
++		    alloc_extra > SIZE_MAX - data_aligned - offsets_aligned) {
++			ret = -EOVERFLOW;
++			goto err_secctx;
++		}
 +	}
 +
  	trace_binder_transaction(reply, t, target_node);
  
  	t->buffer = binder_alloc_new_buf(&target_proc->alloc, tr->data_size,
-@@ -3036,6 +3057,19 @@ static void binder_transaction(struct binder_proc *proc,
- 		t->buffer = NULL;
- 		goto err_binder_alloc_buf_failed;
- 	}
+-		tr->offsets_size, extra_buffers_size,
++		tr->offsets_size, alloc_extra,
+ 		!reply && (t->flags & TF_ONE_WAY));
+ 	if (IS_ERR(t->buffer)) {
+ 		/*
+@@ -3083,6 +3122,15 @@ static void binder_transaction(struct binder_proc *proc,
+ 	off_end = (void *)off_start + tr->offsets_size;
+ 	sg_bufp = (u8 *)(PTR_ALIGN(off_end, sizeof(void *)));
+ 	sg_buf_end = sg_bufp + extra_buffers_size;
 +	if (secctx) {
-+		size_t buf_offset = ALIGN(tr->data_size, sizeof(void *)) +
-+				    ALIGN(tr->offsets_size, sizeof(void *)) +
-+				    ALIGN(extra_buffers_size, sizeof(void *)) -
-+				    ALIGN(secctx_sz, sizeof(u64));
-+		char *kptr = t->buffer->data + buf_offset;
-+
-+		t->security_ctx = (uintptr_t)kptr +
-+		    binder_alloc_get_user_buffer_offset(&target_proc->alloc);
-+		memcpy(kptr, secctx, secctx_sz);
-+		security_release_secctx(secctx, secctx_sz);
++		/* Only the original SG range is available to userspace objects. */
++		memset(sg_buf_end, 0, context_space);
++		memcpy(sg_buf_end, secctx, secctx_len);
++		t->security_ctx = (uintptr_t)sg_buf_end +
++			binder_alloc_get_user_buffer_offset(&target_proc->alloc);
++		security_release_secctx(secctx, secctx_len);
 +		secctx = NULL;
 +	}
- 	t->buffer->debug_id = t->debug_id;
- 	t->buffer->transaction = t;
- 	t->buffer->target_node = target_node;
-@@ -3305,6 +3339,9 @@ static void binder_transaction(struct binder_proc *proc,
+ 	off_min = 0;
+ 	for (; offp < off_end; offp++) {
+ 		struct binder_object_header *hdr;
+@@ -3297,7 +3345,14 @@ err_copy_data_failed:
+ 	target_node = NULL;
  	t->buffer->transaction = NULL;
  	binder_alloc_free_buf(&target_proc->alloc, t->buffer);
++	goto err_binder_alloc_buf_failed;
++err_secctx:
++	return_error = BR_FAILED_REPLY;
++	return_error_param = ret;
++	return_error_line = __LINE__;
  err_binder_alloc_buf_failed:
 +	if (secctx)
-+		security_release_secctx(secctx, secctx_sz);
-+err_get_secctx_failed:
++		security_release_secctx(secctx, secctx_len);
  	kfree(tcomplete);
  	binder_stats_deleted(BINDER_STAT_TRANSACTION_COMPLETE);
  err_alloc_tcomplete_failed:
-@@ -4036,11 +4073,13 @@ static int binder_thread_read(struct binder_proc *proc,
+@@ -3356,6 +3411,39 @@ err_invalid_target_handle:
+ 	}
+ }
+ 
++/* Release a delivered buffer, or roll back a delivery before userspace owns it. */
++static void binder_free_received_buffer(struct binder_proc *proc,
++					struct binder_buffer *buffer,
++					binder_size_t *failed_at)
++{
++	if (buffer->transaction) {
++		buffer->transaction->buffer = NULL;
++		buffer->transaction = NULL;
++	}
++	if (buffer->async_transaction && buffer->target_node) {
++		struct binder_node *buf_node;
++		struct binder_work *w;
++
++		buf_node = buffer->target_node;
++		binder_node_inner_lock(buf_node);
++		BUG_ON(!buf_node->has_async_transaction);
++		BUG_ON(buf_node->proc != proc);
++		w = binder_dequeue_work_head_ilocked(
++				&buf_node->async_todo);
++		if (!w) {
++			buf_node->has_async_transaction = 0;
++		} else {
++			binder_enqueue_work_ilocked(
++					w, &proc->todo);
++			binder_wakeup_proc_ilocked(proc);
++		}
++		binder_node_inner_unlock(buf_node);
++	}
++	trace_binder_transaction_buffer_release(buffer);
++	binder_transaction_buffer_release(proc, buffer, failed_at);
++	binder_alloc_free_buf(&proc->alloc, buffer);
++}
++
+ static int binder_thread_write(struct binder_proc *proc,
+ 			struct binder_thread *thread,
+ 			binder_uintptr_t binder_buffer, size_t size,
+@@ -3543,32 +3631,7 @@ static int binder_thread_write(struct binder_proc *proc,
+ 				     buffer->debug_id,
+ 				     buffer->transaction ? "active" : "finished");
+ 
+-			if (buffer->transaction) {
+-				buffer->transaction->buffer = NULL;
+-				buffer->transaction = NULL;
+-			}
+-			if (buffer->async_transaction && buffer->target_node) {
+-				struct binder_node *buf_node;
+-				struct binder_work *w;
+-
+-				buf_node = buffer->target_node;
+-				binder_node_inner_lock(buf_node);
+-				BUG_ON(!buf_node->has_async_transaction);
+-				BUG_ON(buf_node->proc != proc);
+-				w = binder_dequeue_work_head_ilocked(
+-						&buf_node->async_todo);
+-				if (!w) {
+-					buf_node->has_async_transaction = 0;
+-				} else {
+-					binder_enqueue_work_ilocked(
+-							w, &proc->todo);
+-					binder_wakeup_proc_ilocked(proc);
+-				}
+-				binder_node_inner_unlock(buf_node);
+-			}
+-			trace_binder_transaction_buffer_release(buffer);
+-			binder_transaction_buffer_release(proc, buffer, NULL);
+-			binder_alloc_free_buf(&proc->alloc, buffer);
++			binder_free_received_buffer(proc, buffer, NULL);
+ 			break;
+ 		}
+ 
+@@ -3945,7 +4008,9 @@ retry:
  
  	while (1) {
  		uint32_t cmd;
 -		struct binder_transaction_data tr;
 +		struct binder_transaction_data_secctx tr;
 +		struct binder_transaction_data *trd = &tr.transaction_data;
++		size_t trsize = sizeof(*trd);
  		struct binder_work *w = NULL;
  		struct list_head *list = NULL;
  		struct binder_transaction *t = NULL;
- 		struct binder_thread *t_from;
-+		size_t trsize = sizeof(*trd);
+@@ -3966,7 +4031,11 @@ retry:
+ 			break;
+ 		}
  
- 		binder_inner_proc_lock(proc);
- 		if (!binder_worklist_empty_ilocked(&thread->todo))
-@@ -4240,8 +4279,8 @@ static int binder_thread_read(struct binder_proc *proc,
- 		if (t->buffer->target_node) {
+-		if (end - ptr < sizeof(tr) + 4) {
++		w = list_first_entry(list, struct binder_work, entry);
++		if (w->type == BINDER_WORK_TRANSACTION &&
++		    container_of(w, struct binder_transaction, work)->security_ctx)
++			trsize = sizeof(tr);
++		if (end - ptr < sizeof(uint32_t) + trsize) {
+ 			binder_inner_proc_unlock(proc);
+ 			break;
+ 		}
+@@ -4142,53 +4211,68 @@ retry:
  			struct binder_node *target_node = t->buffer->target_node;
+ 			struct binder_priority node_prio;
  
 -			tr.target.ptr = target_node->ptr;
 -			tr.cookie =  target_node->cookie;
 +			trd->target.ptr = target_node->ptr;
 +			trd->cookie =  target_node->cookie;
- 			t->saved_priority = task_nice(current);
- 			if (t->priority < target_node->min_priority &&
- 			    !(t->flags & TF_ONE_WAY))
-@@ -4251,22 +4290,23 @@ static int binder_thread_read(struct binder_proc *proc,
- 				binder_set_nice(target_node->min_priority);
+ 			node_prio.sched_policy = target_node->sched_policy;
+ 			node_prio.prio = target_node->min_priority;
+ 			binder_transaction_priority(current, t, node_prio,
+ 						    target_node->inherit_rt);
  			cmd = BR_TRANSACTION;
  		} else {
 -			tr.target.ptr = 0;
@@ -227,20 +381,13 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  			struct task_struct *sender = t_from->proc->tsk;
  
 -			tr.sender_pid = task_tgid_nr_ns(sender,
--							task_active_pid_ns(current));
-+			trd->sender_pid =
-+				task_tgid_nr_ns(sender,
-+						task_active_pid_ns(current));
++			trd->sender_pid = task_tgid_nr_ns(sender,
+ 							task_active_pid_ns(current));
  		} else {
 -			tr.sender_pid = 0;
 +			trd->sender_pid = 0;
  		}
  
- 		ret = binder_apply_fd_fixups(t);
-@@ -4297,15 +4337,20 @@ static int binder_thread_read(struct binder_proc *proc,
- 			}
- 			continue;
- 		}
 -		tr.data_size = t->buffer->data_size;
 -		tr.offsets_size = t->buffer->offsets_size;
 -		tr.data.ptr.buffer = (binder_uintptr_t)
@@ -254,45 +401,49 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  					ALIGN(t->buffer->data_size,
  					    sizeof(void *));
  
-+		tr.secctx = t->security_ctx;
+-		if (put_user(cmd, (uint32_t __user *)ptr)) {
+-			if (t_from)
+-				binder_thread_dec_tmpref(t_from);
+-			return -EFAULT;
 +		if (t->security_ctx) {
++			tr.secctx = t->security_ctx;
 +			cmd = BR_TRANSACTION_SEC_CTX;
-+			trsize = sizeof(tr);
-+		}
- 		if (put_user(cmd, (uint32_t __user *)ptr)) {
- 			if (t_from)
- 				binder_thread_dec_tmpref(t_from);
-@@ -4316,7 +4361,7 @@ static int binder_thread_read(struct binder_proc *proc,
- 			return -EFAULT;
  		}
- 		ptr += sizeof(uint32_t);
+-		ptr += sizeof(uint32_t);
 -		if (copy_to_user(ptr, &tr, sizeof(tr))) {
-+		if (copy_to_user(ptr, &tr, trsize)) {
++		if (put_user(cmd, (uint32_t __user *)ptr) ||
++		    copy_to_user(ptr + sizeof(uint32_t), &tr, trsize)) {
  			if (t_from)
  				binder_thread_dec_tmpref(t_from);
- 
-@@ -4325,24 +4370,26 @@ static int binder_thread_read(struct binder_proc *proc,
- 
++			if (cmd == BR_TRANSACTION_SEC_CTX) {
++				struct binder_buffer *buffer = t->buffer;
++				binder_size_t *offsets_end = (void *)(buffer->data +
++					ALIGN(buffer->data_size, sizeof(void *)) +
++					buffer->offsets_size);
++
++				/* Failed delivery: no BC_FREE_BUFFER will follow. */
++				if (t->set_priority_called)
++					binder_restore_priority(current, t->saved_priority);
++				binder_free_received_buffer(proc, buffer, offsets_end);
++				if (t->flags & TF_ONE_WAY)
++					binder_free_transaction(t);
++				else
++					binder_send_failed_reply(t, BR_FAILED_REPLY);
++			}
  			return -EFAULT;
  		}
 -		ptr += sizeof(tr);
++		ptr += sizeof(uint32_t);
 +		ptr += trsize;
  
  		trace_binder_transaction_received(t);
  		binder_stat_br(proc, thread, cmd);
- 		binder_debug(BINDER_DEBUG_TRANSACTION,
- 			     "%d:%d %s %d %d:%d, cmd %d size %zd-%zd ptr %016llx-%016llx\n",
- 			     proc->pid, thread->pid,
- 			     (cmd == BR_TRANSACTION) ? "BR_TRANSACTION" :
--			     "BR_REPLY",
-+				(cmd == BR_TRANSACTION_SEC_CTX) ?
-+				     "BR_TRANSACTION_SEC_CTX" : "BR_REPLY",
+@@ -4200,12 +4284,12 @@ retry:
  			     t->debug_id, t_from ? t_from->proc->pid : 0,
  			     t_from ? t_from->pid : 0, cmd,
  			     t->buffer->data_size, t->buffer->offsets_size,
 -			     (u64)tr.data.ptr.buffer, (u64)tr.data.ptr.offsets);
-+			     (u64)trd->data.ptr.buffer,
-+			     (u64)trd->data.ptr.offsets);
++			     (u64)trd->data.ptr.buffer, (u64)trd->data.ptr.offsets);
  
  		if (t_from)
  			binder_thread_dec_tmpref(t_from);
@@ -302,7 +453,15 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  			binder_inner_proc_lock(thread->proc);
  			t->to_parent = thread->transaction_stack;
  			t->to_thread = thread;
-@@ -4690,7 +4737,8 @@ static int binder_ioctl_write_read(struct file *filp,
+@@ -4365,6 +4449,7 @@ static void binder_free_proc(struct binder_proc *proc)
+ 	BUG_ON(!list_empty(&proc->todo));
+ 	BUG_ON(!list_empty(&proc->delivered_death));
+ 	binder_alloc_deferred_release(&proc->alloc);
++	put_cred(proc->cred);
+ 	put_task_struct(proc->tsk);
+ 	binder_stats_deleted(BINDER_STAT_PROC);
+ 	kfree(proc);
+@@ -4545,7 +4630,8 @@ out:
  	return ret;
  }
  
@@ -312,7 +471,16 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  {
  	int ret = 0;
  	struct binder_proc *proc = filp->private_data;
-@@ -4719,7 +4767,7 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp)
+@@ -4559,7 +4645,7 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp)
+ 		ret = -EBUSY;
+ 		goto out;
+ 	}
+-	ret = security_binder_set_context_mgr(proc->tsk);
++	ret = security_binder_set_context_mgr(proc->cred);
+ 	if (ret < 0)
+ 		goto out;
+ 	if (uid_valid(context->binder_context_mgr_uid)) {
+@@ -4574,7 +4660,7 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp)
  	} else {
  		context->binder_context_mgr_uid = curr_euid;
  	}
@@ -321,7 +489,7 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  	if (!new_node) {
  		ret = -ENOMEM;
  		goto out;
-@@ -4842,8 +4890,20 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+@@ -4658,8 +4744,20 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
  		binder_inner_proc_unlock(proc);
  		break;
  	}
@@ -329,7 +497,7 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
 +		struct flat_binder_object fbo;
 +
 +		if (copy_from_user(&fbo, ubuf, sizeof(fbo))) {
-+			ret = -EINVAL;
++			ret = -EFAULT;
 +			goto err;
 +		}
 +		ret = binder_ioctl_set_ctx_mgr(filp, &fbo);
@@ -343,33 +511,155 @@ diff --git a/drivers/android/binder.c b/drivers/android/binder.c
  		if (ret)
  			goto err;
  		break;
+@@ -4806,6 +4904,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
+ 	spin_lock_init(&proc->outer_lock);
+ 	get_task_struct(current->group_leader);
+ 	proc->tsk = current->group_leader;
++	proc->cred = get_cred(filp->f_cred);
+ 	INIT_LIST_HEAD(&proc->todo);
+ 	if (binder_supported_policy(current->policy)) {
+ 		proc->default_priority.sched_policy = current->policy;
+diff --git a/include/linux/lsm_hooks.h b/include/linux/lsm_hooks.h
+index 558adfa..dff80da 100644
+--- a/include/linux/lsm_hooks.h
++++ b/include/linux/lsm_hooks.h
+@@ -1332,13 +1332,13 @@
+  */
+ 
+ union security_list_options {
+-	int (*binder_set_context_mgr)(struct task_struct *mgr);
+-	int (*binder_transaction)(struct task_struct *from,
+-					struct task_struct *to);
+-	int (*binder_transfer_binder)(struct task_struct *from,
+-					struct task_struct *to);
+-	int (*binder_transfer_file)(struct task_struct *from,
+-					struct task_struct *to,
++	int (*binder_set_context_mgr)(const struct cred *mgr);
++	int (*binder_transaction)(const struct cred *from,
++					const struct cred *to);
++	int (*binder_transfer_binder)(const struct cred *from,
++					const struct cred *to);
++	int (*binder_transfer_file)(const struct cred *from,
++					const struct cred *to,
+ 					struct file *file);
+ 
+ 	int (*ptrace_access_check)(struct task_struct *child,
+@@ -1496,6 +1496,7 @@ union security_list_options {
+ 	int (*task_setpgid)(struct task_struct *p, pid_t pgid);
+ 	int (*task_getpgid)(struct task_struct *p);
+ 	int (*task_getsid)(struct task_struct *p);
++	void (*cred_getsecid)(const struct cred *cred, u32 *secid);
+ 	void (*task_getsecid)(struct task_struct *p, u32 *secid);
+ 	int (*task_setnice)(struct task_struct *p, int nice);
+ 	int (*task_setioprio)(struct task_struct *p, int ioprio);
+@@ -1759,6 +1760,7 @@ struct security_hook_heads {
+ 	struct list_head task_setpgid;
+ 	struct list_head task_getpgid;
+ 	struct list_head task_getsid;
++	struct list_head cred_getsecid;
+ 	struct list_head task_getsecid;
+ 	struct list_head task_setnice;
+ 	struct list_head task_setioprio;
+diff --git a/include/linux/security.h b/include/linux/security.h
+index aaf6046..8a4af5a 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -216,13 +216,13 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
+ extern int security_init(void);
+ 
+ /* Security operations */
+-int security_binder_set_context_mgr(struct task_struct *mgr);
+-int security_binder_transaction(struct task_struct *from,
+-				struct task_struct *to);
+-int security_binder_transfer_binder(struct task_struct *from,
+-				    struct task_struct *to);
+-int security_binder_transfer_file(struct task_struct *from,
+-				  struct task_struct *to, struct file *file);
++int security_binder_set_context_mgr(const struct cred *mgr);
++int security_binder_transaction(const struct cred *from,
++				const struct cred *to);
++int security_binder_transfer_binder(const struct cred *from,
++				    const struct cred *to);
++int security_binder_transfer_file(const struct cred *from,
++				  const struct cred *to, struct file *file);
+ int security_ptrace_access_check(struct task_struct *child, unsigned int mode);
+ int security_ptrace_traceme(struct task_struct *parent);
+ int security_capget(struct task_struct *target,
+@@ -354,6 +354,7 @@ int security_task_setpgid(struct task_struct *p, pid_t pgid);
+ int security_task_getpgid(struct task_struct *p);
+ int security_task_getsid(struct task_struct *p);
+ void security_task_getsecid(struct task_struct *p, u32 *secid);
++void security_cred_getsecid(const struct cred *cred, u32 *secid);
+ int security_task_setnice(struct task_struct *p, int nice);
+ int security_task_setioprio(struct task_struct *p, int ioprio);
+ int security_task_getioprio(struct task_struct *p);
+@@ -426,25 +427,25 @@ static inline int security_init(void)
+ 	return 0;
+ }
+ 
+-static inline int security_binder_set_context_mgr(struct task_struct *mgr)
++static inline int security_binder_set_context_mgr(const struct cred *mgr)
+ {
+ 	return 0;
+ }
+ 
+-static inline int security_binder_transaction(struct task_struct *from,
+-					      struct task_struct *to)
++static inline int security_binder_transaction(const struct cred *from,
++					      const struct cred *to)
+ {
+ 	return 0;
+ }
+ 
+-static inline int security_binder_transfer_binder(struct task_struct *from,
+-						  struct task_struct *to)
++static inline int security_binder_transfer_binder(const struct cred *from,
++						  const struct cred *to)
+ {
+ 	return 0;
+ }
+ 
+-static inline int security_binder_transfer_file(struct task_struct *from,
+-						struct task_struct *to,
++static inline int security_binder_transfer_file(const struct cred *from,
++						const struct cred *to,
+ 						struct file *file)
+ {
+ 	return 0;
+@@ -963,6 +964,11 @@ static inline int security_task_getsid(struct task_struct *p)
+ 	return 0;
+ }
+ 
++static inline void security_cred_getsecid(const struct cred *cred, u32 *secid)
++{
++	*secid = 0;
++}
++
+ static inline void security_task_getsecid(struct task_struct *p, u32 *secid)
+ {
+ 	*secid = 0;
 diff --git a/include/uapi/linux/android/binder.h b/include/uapi/linux/android/binder.h
+index 5539933..24137b5 100644
 --- a/include/uapi/linux/android/binder.h
 +++ b/include/uapi/linux/android/binder.h
-@@ -41,6 +41,14 @@ enum {
- enum {
- 	FLAT_BINDER_FLAG_PRIORITY_MASK = 0xff,
- 	FLAT_BINDER_FLAG_ACCEPTS_FDS = 0x100,
-+
-+	/**
-+	 * @FLAT_BINDER_FLAG_TXN_SECURITY_CTX: request security contexts
-+	 *
-+	 * Only when set, causes senders to include their security
-+	 * context
-+	 */
+@@ -50,6 +50,8 @@ enum flat_binder_object_shifts {
+  * enum flat_binder_object_flags - flags for use in flat_binder_object.flags
+  */
+ enum flat_binder_object_flags {
++	/* Deliver the sender security context with incoming transactions. */
 +	FLAT_BINDER_FLAG_TXN_SECURITY_CTX = 0x1000,
- };
- 
- #ifdef BINDER_IPC_32BIT
-@@ -218,6 +226,7 @@ struct binder_node_info_for_ref {
- #define BINDER_VERSION			_IOWR('b', 9, struct binder_version)
- #define BINDER_GET_NODE_DEBUG_INFO	_IOWR('b', 11, struct binder_node_debug_info)
- #define BINDER_GET_NODE_INFO_FOR_REF	_IOWR('b', 12, struct binder_node_info_for_ref)
+ 	/**
+ 	 * @FLAT_BINDER_FLAG_PRIORITY_MASK: bit-mask for min scheduler priority
+ 	 *
+@@ -250,6 +252,7 @@ struct binder_node_debug_info {
+ #define BINDER_SET_IDLE_TIMEOUT		_IOW('b', 3, __s64)
+ #define BINDER_SET_MAX_THREADS		_IOW('b', 5, __u32)
+ #define BINDER_SET_IDLE_PRIORITY	_IOW('b', 6, __s32)
 +#define BINDER_SET_CONTEXT_MGR_EXT	_IOW('b', 13, struct flat_binder_object)
- 
- /*
-  * NOTE: Two special error codes you should check for when calling
-@@ -276,6 +285,11 @@ struct binder_transaction_data {
+ #define BINDER_SET_CONTEXT_MGR		_IOW('b', 7, __s32)
+ #define BINDER_THREAD_EXIT		_IOW('b', 8, __s32)
+ #define BINDER_VERSION			_IOWR('b', 9, struct binder_version)
+@@ -312,6 +315,11 @@ struct binder_transaction_data {
  	} data;
  };
  
@@ -381,19 +671,158 @@ diff --git a/include/uapi/linux/android/binder.h b/include/uapi/linux/android/bi
  struct binder_transaction_data_sg {
  	struct binder_transaction_data transaction_data;
  	binder_size_t buffers_size;
-@@ -311,6 +325,11 @@ enum binder_driver_return_protocol {
+@@ -347,6 +355,7 @@ enum binder_driver_return_protocol {
  	BR_OK = _IO('r', 1),
  	/* No parameters! */
  
-+	BR_TRANSACTION_SEC_CTX = _IOR('r', 2,
-+				      struct binder_transaction_data_secctx),
-+	/*
-+	 * binder_transaction_data_secctx: the received command.
-+	 */
++	BR_TRANSACTION_SEC_CTX = _IOR('r', 2, struct binder_transaction_data_secctx),
  	BR_TRANSACTION = _IOR('r', 2, struct binder_transaction_data),
  	BR_REPLY = _IOR('r', 3, struct binder_transaction_data),
  	/*
-BINDER_UPSTREAM_PATCH
+diff --git a/security/security.c b/security/security.c
+index 1ba5274..dfdf078 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -131,25 +131,25 @@ int __init security_module_enable(const char *module)
+ 
+ /* Security operations */
+ 
+-int security_binder_set_context_mgr(struct task_struct *mgr)
++int security_binder_set_context_mgr(const struct cred *mgr)
+ {
+ 	return call_int_hook(binder_set_context_mgr, 0, mgr);
+ }
+ 
+-int security_binder_transaction(struct task_struct *from,
+-				struct task_struct *to)
++int security_binder_transaction(const struct cred *from,
++				const struct cred *to)
+ {
+ 	return call_int_hook(binder_transaction, 0, from, to);
+ }
+ 
+-int security_binder_transfer_binder(struct task_struct *from,
+-				    struct task_struct *to)
++int security_binder_transfer_binder(const struct cred *from,
++				    const struct cred *to)
+ {
+ 	return call_int_hook(binder_transfer_binder, 0, from, to);
+ }
+ 
+-int security_binder_transfer_file(struct task_struct *from,
+-				  struct task_struct *to, struct file *file)
++int security_binder_transfer_file(const struct cred *from,
++				  const struct cred *to, struct file *file)
+ {
+ 	return call_int_hook(binder_transfer_file, 0, from, to, file);
+ }
+@@ -977,6 +977,12 @@ int security_task_getsid(struct task_struct *p)
+ 	return call_int_hook(task_getsid, 0, p);
+ }
+ 
++void security_cred_getsecid(const struct cred *cred, u32 *secid)
++{
++	*secid = 0;
++	call_void_hook(cred_getsecid, cred, secid);
++}
++
+ void security_task_getsecid(struct task_struct *p, u32 *secid)
+ {
+ 	*secid = 0;
+@@ -1754,6 +1760,7 @@ struct security_hook_heads security_hook_heads = {
+ 	.task_setpgid =	LIST_HEAD_INIT(security_hook_heads.task_setpgid),
+ 	.task_getpgid =	LIST_HEAD_INIT(security_hook_heads.task_getpgid),
+ 	.task_getsid =	LIST_HEAD_INIT(security_hook_heads.task_getsid),
++	.cred_getsecid = LIST_HEAD_INIT(security_hook_heads.cred_getsecid),
+ 	.task_getsecid =
+ 		LIST_HEAD_INIT(security_hook_heads.task_getsecid),
+ 	.task_setnice =	LIST_HEAD_INIT(security_hook_heads.task_setnice),
+diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
+index c332df5..b3a63e3 100644
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -2197,10 +2197,10 @@ static inline u32 open_file_to_av(struct file *file)
+ 
+ /* Hook functions begin here. */
+ 
+-static int selinux_binder_set_context_mgr(struct task_struct *mgr)
++static int selinux_binder_set_context_mgr(const struct cred *mgr)
+ {
+ 	u32 mysid = current_sid();
+-	u32 mgrsid = task_sid(mgr);
++	u32 mgrsid = cred_sid(mgr);
+ #ifdef CONFIG_RKP_KDP
+ 	int rc;
+ 
+@@ -2212,12 +2212,12 @@ static int selinux_binder_set_context_mgr(struct task_struct *mgr)
+ 			    BINDER__SET_CONTEXT_MGR, NULL);
+ }
+ 
+-static int selinux_binder_transaction(struct task_struct *from,
+-				      struct task_struct *to)
++static int selinux_binder_transaction(const struct cred *from,
++				      const struct cred *to)
+ {
+ 	u32 mysid = current_sid();
+-	u32 fromsid = task_sid(from);
+-	u32 tosid = task_sid(to);
++	u32 fromsid = cred_sid(from);
++	u32 tosid = cred_sid(to);
+ 	int rc;
+ #ifdef CONFIG_RKP_KDP
+ 	if ((rc = security_integrity_current()))
+@@ -2234,11 +2234,11 @@ static int selinux_binder_transaction(struct task_struct *from,
+ 			    NULL);
+ }
+ 
+-static int selinux_binder_transfer_binder(struct task_struct *from,
+-					  struct task_struct *to)
++static int selinux_binder_transfer_binder(const struct cred *from,
++					  const struct cred *to)
+ {
+-	u32 fromsid = task_sid(from);
+-	u32 tosid = task_sid(to);
++	u32 fromsid = cred_sid(from);
++	u32 tosid = cred_sid(to);
+ #ifdef CONFIG_RKP_KDP
+ 	int rc;
+ 
+@@ -2249,11 +2249,11 @@ static int selinux_binder_transfer_binder(struct task_struct *from,
+ 			    NULL);
+ }
+ 
+-static int selinux_binder_transfer_file(struct task_struct *from,
+-					struct task_struct *to,
++static int selinux_binder_transfer_file(const struct cred *from,
++					const struct cred *to,
+ 					struct file *file)
+ {
+-	u32 sid = task_sid(to);
++	u32 sid = cred_sid(to);
+ 	struct file_security_struct *fsec = file->f_security;
+ 	struct dentry *dentry = file->f_path.dentry;
+ 	struct inode_security_struct *isec;
+@@ -4400,6 +4400,11 @@ static int selinux_task_getsid(struct task_struct *p)
+ 	return current_has_perm(p, PROCESS__GETSESSION);
+ }
+ 
++static void selinux_cred_getsecid(const struct cred *cred, u32 *secid)
++{
++	*secid = cred_sid(cred);
++}
++
+ static void selinux_task_getsecid(struct task_struct *p, u32 *secid)
+ {
+ #ifdef CONFIG_RKP_KDP
+@@ -7169,6 +7174,7 @@ static struct security_hook_list selinux_hooks[] = {
+ 	LSM_HOOK_INIT(task_setpgid, selinux_task_setpgid),
+ 	LSM_HOOK_INIT(task_getpgid, selinux_task_getpgid),
+ 	LSM_HOOK_INIT(task_getsid, selinux_task_getsid),
++	LSM_HOOK_INIT(cred_getsecid, selinux_cred_getsecid),
+ 	LSM_HOOK_INIT(task_getsecid, selinux_task_getsecid),
+ 	LSM_HOOK_INIT(task_setnice, selinux_task_setnice),
+ 	LSM_HOOK_INIT(task_setioprio, selinux_task_setioprio),
+BINDER_REVIEW_V2
     sha256sum "$out/binder-security-context.patch" > "$out/binder-patch.sha256"
     git apply --check --verbose "$out/binder-security-context.patch" 2>&1 | tee "$out/binder-patch-check.log"
     git apply "$out/binder-security-context.patch"
@@ -401,6 +830,85 @@ BINDER_UPSTREAM_PATCH
 fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]] && grep -Eq '^CONFIG_RKP(_KDP)?=y
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    while IFS= read -r setting; do
+        grep -Fxq "$setting" .config || { echo "Unresolved integration setting: $setting" >&2; exit 1; }
+    done < "$ANDROID_INIT_FRAGMENT"
+fi
+stage=build
+make -k -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
+cp arch/arm64/boot/Image System.map "$out/"
+test "$(od -An -j56 -N4 -tx1 "$out/Image" | tr -d '[:space:]')" = 41524d64
+for symbol in binder_init selinux_init pl011_console_write gic_init_bases psci_dt_init arch_timer_of_init; do
+    grep -w "$symbol" "$out/System.map" || echo "Symbol absent: $symbol"
+done | tee "$out/symbols.txt"
+grep -qw binder_init "$out/System.map"
+grep -qw selinux_init "$out/System.map"
+(cd "$out" && sha256sum Image System.map config.final > SHA256SUMS)
+if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
+    stage=kernel_ready
+    exit 0
+fi
+stage=initramfs
+mkdir -p "$work/uapi/linux/android"
+cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
+aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
+    -I "$work/uapi" "$repo/ci/samsung-virt/probe.c" -o "$work/init"
+checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
+cc -O2 usr/gen_init_cpio.c -o "$work/gen_init_cpio"
+cat > "$work/initramfs.list" <<LIST
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+dir /sys 755 0 0
+file /init $work/init 755 0 0
+file /test.policy $work/test.policy 644 0 0
+LIST
+"$work/gen_init_cpio" "$work/initramfs.list" > "$out/initramfs.cpio"
+cp "$work/test.policy" "$out/"
+(cd "$out" && sha256sum Image System.map config.final initramfs.cpio test.policy > SHA256SUMS)
+stage=qemu
+# A PASS marker must be present even if QEMU is terminated by the timeout.
+rc=0
+timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
+    -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
+    -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/initramfs.cpio" \
+    -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' > "$out/serial.log" 2>&1 || rc=$?
+printf '%d\n' "$rc" > "$out/qemu-exit.txt"
+cat "$out/serial.log"
+for marker in 'PASS guest init started' 'PASS /dev/binder protocol=' \
+    'PASS /dev/hwbinder protocol=' 'PASS /dev/vndbinder protocol=' \
+    'PASS Binder transaction client=' 'PASS SELinux v30 load enforcing allow and denial' \
+    'PASS all guest checks'; do
+    grep -Fq "$marker" "$out/serial.log" || { echo "Missing: $marker" >&2; exit 1; }
+done
+stage=complete
+
+if [[ -n ${REFERENCE_POLICY:-} ]]; then
+    stage=android_policy
+    cp "$REFERENCE_POLICY" "$out/android-policy-v30.bin"
+    (cd "$out" && echo 'cefa481b0011472ba4ba9447bb66fe1663716992eda114fb7162408598fb91b5  android-policy-v30.bin' | sha256sum -c -)
+    aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
+        -DREFERENCE_POLICY -I "$work/uapi" "$repo/ci/samsung-virt/probe.c" -o "$work/init"
+    cp "$out/android-policy-v30.bin" "$work/test.policy"
+    "$work/gen_init_cpio" "$work/initramfs.list" > "$out/android-policy-initramfs.cpio"
+    qemu_rc=0
+    timeout 45 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
+        -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
+        -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/android-policy-initramfs.cpio" \
+        -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' \
+        > "$out/android-policy-serial.log" 2>&1 || qemu_rc=$?
+    printf '%s\n' "$qemu_rc" > "$out/android-policy-qemu-exit.txt"
+    tail -100 "$out/android-policy-serial.log"
+    grep -Fq 'virt-policy: load result=520276 bytes=520276 enforcing=1' "$out/android-policy-serial.log"
+    grep -Fq 'policy loaded' "$out/android-policy-serial.log"
+    (cd "$out" && sha256sum android-policy-v30.bin android-policy-initramfs.cpio >> SHA256SUMS)
+    stage=complete
+fi
+ .config; then
+    echo 'Binder review v2 is restricted to the non-RKP QEMU configuration.' >&2
+    exit 1
+fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     while IFS= read -r setting; do
         grep -Fxq "$setting" .config || { echo "Unresolved integration setting: $setting" >&2; exit 1; }
