@@ -95,6 +95,15 @@ timeout 180 qemu-system-aarch64 "${args[@]}" > "$out/serial.log" 2>&1 || rc=$?
 printf '%s\n' "$rc" > "$out/qemu-exit.txt"
 # Preserve full serial.log; extract BPF diagnostics before the noisy reboot tail.
 python3 "$(dirname "$0")/bpf-init-diagnostics.py" "$out" | tee "$out/bpf-init-diagnostics.txt"
+# Correlate the observed exit with the kernel's *built* BPF feature set.
+if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+    config="${SAMSUNG_INIT_KERNEL%/*}/.config"
+    if [[ -f "$config" ]]; then
+        grep -E '^(CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|BPF_EVENTS|CGROUP_BPF|NET_CLS_BPF|NET_ACT_BPF|NET_SCH_INGRESS|NET_CLS_ACT|BPF_STREAM_PARSER|DEBUG_INFO_BTF)=|# CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|BPF_EVENTS|CGROUP_BPF|NET_CLS_BPF|NET_ACT_BPF|NET_SCH_INGRESS|NET_CLS_ACT|BPF_STREAM_PARSER|DEBUG_INFO_BTF) is not set)' "$config" > "$out/bpf-kernel-config.txt" || true
+    else
+        echo "Built kernel .config unavailable at $config" > "$out/bpf-kernel-config.txt"
+    fi
+fi
 tail -70 "$out/serial.log"
 grep -E 'Linux version|virtio_blk| v[d][a-z]:|__mount|mountFstab|sys.boot_completed|eglQueryStringImplementationANDROID|starting service|SystemServer' \
     "$out/serial.log" > "$out/boot-events.txt" || true
