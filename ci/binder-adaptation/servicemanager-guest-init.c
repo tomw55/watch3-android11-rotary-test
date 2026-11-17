@@ -183,7 +183,7 @@ int main(void) {
               char out=(c>=32 && c<127)?(char)c:' ';
               if(write(1,&out,1)<0) break;
             }
-            logmsg("\\n");
+            logmsg("\n");
           }
         }
         usleep(100000);
