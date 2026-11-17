@@ -32,6 +32,7 @@ jobs:
           name: android11-servicemanager-binary-${{ github.run_id }}
           path: |
             servicemanager-binary/servicemanager
+            servicemanager-binary/android11-servicemanager-guest.tar.gz
             servicemanager-binary/*.txt
             servicemanager-binary/*.sha256
             servicemanager-binary/*.log
