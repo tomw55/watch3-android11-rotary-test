@@ -174,6 +174,10 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         echo 'FAIL real Android 11 servicemanager terminated or failed to exec' >&2
         exit 1
     fi
+    grep -Fq 'PASS genuine Android 11 service list Binder registry query' "$out/serial.log" || {
+        echo 'FAIL no proof that the real Android 11 service client queried Binder' >&2
+        exit 1
+    }
     grep -Fq 'PASS real Android 11 servicemanager process alive' "$out/serial.log" || {
         echo 'FAIL no proof that Android 11 servicemanager stayed running' >&2
         exit 1
