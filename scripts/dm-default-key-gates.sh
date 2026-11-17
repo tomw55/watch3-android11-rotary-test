@@ -20,9 +20,14 @@ loop=$(losetup -f --show "$backing")
 key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 # The offset is expressed in 512-byte sectors: 16 sectors => DUN 2.
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
-dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 conv=notrunc 2>/dev/null
+dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 conv=notrunc,fsync 2>/dev/null
 dd if="$loop" of="$DK_TEST_DIR/cipher.bin" bs=4096 count=1 2>/dev/null
+echo 'Gate 2 SHA256: expected, raw backing, plaintext, zero-IV reference'
+sha256sum "$DK_VECTOR_DIR/xts-offset16-4096.bin" "$DK_TEST_DIR/cipher.bin" "$DK_VECTOR_DIR/xts-plain-4096.bin" "$DK_VECTOR_DIR/xts-zero-4096.bin"
 if ! cmp -s "$DK_TEST_DIR/cipher.bin" "$DK_VECTOR_DIR/xts-offset16-4096.bin"; then
+  echo 'Gate 2 first 64 bytes: expected then actual'
+  od -An -tx1 -N64 "$DK_VECTOR_DIR/xts-offset16-4096.bin"
+  od -An -tx1 -N64 "$DK_TEST_DIR/cipher.bin"
   echo 'FAIL gate2: raw ciphertext differs from independent AES-XTS reference' >&2; exit 1
 fi
 echo 'PASS gate2: AES-256-XTS 4KiB offset16 DUN2 ciphertext'
