@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <sys/epoll.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,14 @@ int main(void) {
   if(access("/sys/fs/selinux/policy",R_OK)==0)
     logmsg("PASS SELinux policy interface available\n");
   else logmsg("WARN SELinux policy interface unavailable\n");
+  int epfd=epoll_create1(EPOLL_CLOEXEC);
+  if(epfd<0) {
+    perror("epoll_create1");
+    logmsg("FAIL epoll_create1 unavailable in QEMU guest\n");
+  } else {
+    logmsg("PASS epoll_create1 available in QEMU guest\n");
+    close(epfd);
+  }
   mkdir("/dev/binderfs",0755);
   int fd=open("/dev/binder",O_RDWR);
   if(fd<0){perror("open /dev/binder");logmsg("FAIL Binder device unavailable\n");}
