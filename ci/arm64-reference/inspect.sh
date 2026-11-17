@@ -89,6 +89,18 @@ PYGPT
         done
         readelf -h -l -d "$work/init" >> "$out/init-inspection.txt"
         grep -q 'AArch64' "$out/init-inspection.txt"
+        # Inspect the actual API 30 vold binary, not an assumed AOSP revision.
+        for f in /bin/vold /system/bin/vold; do
+            debugfs -R "dump $f $work/vold" "$raw" > "$out/vold-extract.log" 2>&1 || true
+            if [[ -s "$work/vold" ]]; then break; fi
+        done
+        if [[ -s "$work/vold" ]]; then
+            sha256sum "$work/vold" > "$out/vold-sha256.txt"
+            file "$work/vold" > "$out/vold-binary-type.txt"
+            strings -a "$work/vold" | grep -E 'default-key|iv_large_sectors|sector_size:|aes-xts-plain64|AES-256-XTS|encryptFstab' > "$out/vold-metadata-encryption-strings.txt" || true
+        else
+            echo 'vold binary not found in system ext4' > "$out/vold-metadata-encryption-strings.txt"
+        fi
         # Identify the *actual* API 30 image bpfloader before trusting an AOSP
         # source revision. These are read-only debugfs inspections.
         {
