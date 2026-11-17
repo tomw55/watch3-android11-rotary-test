@@ -129,6 +129,11 @@ if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
 fi
 aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
     "${probe_flags[@]}" -I "$work/uapi" "$probe_source" -o "$work/init"
+if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -static -O2 \
+        -I "$work/uapi" "$repo/ci/binder-adaptation/register-test-service.c" \
+        -o "$work/register-test-service"
+fi
 checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
 cc -O2 usr/gen_init_cpio.c -o "$work/gen_init_cpio"
 cat > "$work/initramfs.list" <<LIST
@@ -139,6 +144,7 @@ file /init $work/init 755 0 0
 file /test.policy $work/test.policy 644 0 0
 LIST
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    echo "file /register-test-service $work/register-test-service 755 0 0" >> "$work/initramfs.list"
     tar -tzf "$SERVICEMANAGER_GUEST_TAR" > "$work/guest-archive-files.txt"
     grep -Fxq 'system/bin/servicemanager' "$work/guest-archive-files.txt"
     mkdir -p "$work/android-guest"
@@ -174,6 +180,7 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         echo 'FAIL real Android 11 servicemanager terminated or failed to exec' >&2
         exit 1
     fi
+    grep -Fq 'PASS Android 11 test service discovered in registry' "$out/serial.log" || { echo 'FAIL registered service not discovered' >&2; exit 1; }
     grep -Fq 'PASS genuine Android 11 service list Binder registry query' "$out/serial.log" || {
         echo 'FAIL no proof that the real Android 11 service client queried Binder' >&2
         exit 1
