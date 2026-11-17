@@ -45,6 +45,30 @@ int main(void) {
   if(access("/system/etc/selinux/plat_service_contexts",R_OK)==0)
     logmsg("PASS Android 11 platform service contexts available\n");
   else logmsg("WARN Android 11 platform service contexts unavailable\n");
+  // Determine whether the test name actually resolves in the packaged
+  // Android 11 service-label map, without modifying the production map.
+  {
+    FILE *contexts=fopen("/system/etc/selinux/plat_service_contexts","r");
+    if(contexts) {
+      char line[1024]; int matched=0;
+      while(fgets(line,sizeof(line),contexts)) {
+        char name[256],label[512];
+        if(sscanf(line," %255s %511s",name,label)==2 &&
+           strcmp(name,"watch3.test.echo")==0) {
+          printf("DIAG service_contexts watch3.test.echo label=%s\\n",label);
+          matched=1;
+        }
+      }
+      fclose(contexts);
+      if(!matched) logmsg("DIAG service_contexts has NO watch3.test.echo entry\\n");
+    }
+  }
+  {
+    char buf[128]; int f=open("/sys/fs/selinux/enforce",O_RDONLY);
+    if(f>=0) { ssize_t n=read(f,buf,sizeof(buf)-1); close(f);
+      if(n>0) { buf[n]=0; printf("DIAG SELinux enforcing=%s",buf); if(buf[n-1]!='\\n')puts(""); }
+    } else perror("DIAG open selinux enforce");
+  }
   if(access("/sys/fs/selinux/policy",R_OK)==0)
     logmsg("PASS SELinux policy interface available\n");
   else logmsg("WARN SELinux policy interface unavailable\n");
