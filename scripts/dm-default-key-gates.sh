@@ -21,7 +21,20 @@ key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 # The offset is expressed in 512-byte sectors: 16 sectors => DUN 2.
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
 dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 conv=notrunc,fsync 2>/dev/null
-dd if="$loop" of="$DK_TEST_DIR/cipher.bin" bs=4096 count=1 2>/dev/null
+# Force the backing device's buffered state to disk before validating raw bytes.
+sync
+blockdev --flushbufs "$loop" 2>/dev/null || :
+dd if="$loop" of="$DK_TEST_DIR/cipher.bin" bs=4096 count=1 iflag=direct 2>/dev/null
+dd if="$backing" of="$DK_TEST_DIR/cipher-file.bin" bs=4096 count=1 2>/dev/null
+dd if=/dev/mapper/dk_test of="$DK_TEST_DIR/mapped-read.bin" bs=4096 count=1 2>/dev/null
+echo 'Gate 2 diagnostic: mapped roundtrip, raw loop, backing file'
+if cmp -s "$DK_TEST_DIR/mapped-read.bin" "$DK_VECTOR_DIR/xts-plain-4096.bin"; then
+  echo 'PASS gate2 diagnostic: mapped read returns original plaintext'
+else
+  echo 'FAIL gate2 diagnostic: mapped read differs from plaintext'
+fi
+sha256sum "$DK_TEST_DIR/mapped-read.bin" "$DK_TEST_DIR/cipher-file.bin"
+dmsetup status dk_test || :
 echo 'Gate 2 SHA256: expected, raw backing, plaintext, zero-IV reference'
 sha256sum "$DK_VECTOR_DIR/xts-offset16-4096.bin" "$DK_TEST_DIR/cipher.bin" "$DK_VECTOR_DIR/xts-plain-4096.bin" "$DK_VECTOR_DIR/xts-zero-4096.bin"
 if ! cmp -s "$DK_TEST_DIR/cipher.bin" "$DK_VECTOR_DIR/xts-offset16-4096.bin"; then
