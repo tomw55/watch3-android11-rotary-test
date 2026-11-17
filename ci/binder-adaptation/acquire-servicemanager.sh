@@ -34,11 +34,63 @@ if file "$image" | grep -q 'Android sparse image'; then
 else
   cp "$image" "$out/system.raw.img"
 fi
-# Inspect ext4 without mounting or privileged loop devices.
+# SDK emulator images can be full GPT disk images, not raw ext4.
+# Locate the system partition by GPT name and extract its byte range.
+python3 - "$out/system.raw.img" "$out/system.ext4.img" <<'PY'
+import os, struct, sys
+src, dst = sys.argv[1:]
+with open(src, 'rb') as f:
+    f.seek(512)
+    hdr = f.read(92)
+    if hdr[:8] != b'EFI PART':
+        print('Not GPT: treating input as standalone filesystem')
+        os.link(src, dst)
+        sys.exit(0)
+    entry_lba = struct.unpack_from('<Q', hdr, 72)[0]
+    count, size = struct.unpack_from('<II', hdr, 80)
+    sector = 512
+    if count > 256 or size < 128 or size > 1024:
+        raise RuntimeError('Unexpected GPT entry geometry')
+    f.seek(entry_lba * sector)
+    entries = f.read(count * size)
+    candidates = []
+    for i in range(count):
+        e = entries[i*size:(i+1)*size]
+        if not any(e[:16]):
+            continue
+        first, last = struct.unpack_from('<QQ', e, 32)
+        name = e[56:128].decode('utf-16-le', 'ignore').rstrip('\\x00')
+        print(f'GPT partition {i+1}: {name} sectors {first}-{last}')
+        if name.lower() in ('system', 'system_a'):
+            candidates.insert(0, (first, last, name))
+        else:
+            candidates.append((first, last, name))
+    if not candidates:
+        raise RuntimeError('No GPT partitions found')
+    for first, last, name in candidates:
+        f.seek(first * sector)
+        magic = f.read(2048)[1080:1082]
+        if magic == b'\\x53\\xef':
+            print('Found ext4 partition:', name)
+            f.seek(first * sector)
+            with open(dst, 'wb') as o:
+                remaining = (last-first+1)*sector
+                while remaining:
+                    data = f.read(min(4*1024*1024, remaining))
+                    if not data: raise RuntimeError('Truncated partition')
+                    o.write(data)
+                    remaining -= len(data)
+            break
+    else:
+        raise RuntimeError('No ext4 partition found in GPT disk')
+PY
+file "$out/system.ext4.img" | tee "$out/filesystem-format.txt"
 debugfs -R 'dump /system/bin/servicemanager servicemanager-binary/servicemanager' \
-  "$out/system.raw.img" > "$out/debugfs.log" 2>&1 || \
-debugfs -R 'dump /bin/servicemanager servicemanager-binary/servicemanager' \
-  "$out/system.raw.img" >> "$out/debugfs.log" 2>&1
+  "$out/system.ext4.img" > "$out/debugfs.log" 2>&1 || true
+if ! test -s "$out/servicemanager"; then
+  debugfs -R 'dump /bin/servicemanager servicemanager-binary/servicemanager' \
+    "$out/system.ext4.img" >> "$out/debugfs.log" 2>&1
+fi
 test -s "$out/servicemanager"
 file "$out/servicemanager" | tee "$out/binary-format.txt"
 readelf -h "$out/servicemanager" > "$out/elf-header.txt"
