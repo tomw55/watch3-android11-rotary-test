@@ -80,13 +80,15 @@ int main(void) {
                     uint32_t exception;
                     memcpy(&exception,(void *)(uintptr_t)reply.data.ptr.buffer,4);
                     printf("REGISTER exception=%d (0x%08x)\n",(int32_t)exception,exception);
-                    if(exception==0x80000001U) puts("REGISTER STATUS_UNKNOWN_TRANSACTION: check Android 11 IServiceManager transaction code and Parcel header");
+                    if(exception==0x80000001U) puts("REGISTER EX_TRANSACTION_FAILED: inspect Binder status and servicemanager logs");
                     if(exception==0) got_reply=1;
                 }
                 uint32_t freecmd=BC_FREE_BUFFER;
                 struct {uint32_t cmd;binder_uintptr_t ptr;} __attribute__((packed)) freebuf={freecmd,reply.data.ptr.buffer};
                 struct binder_write_read freeio={.write_size=sizeof(freebuf),.write_buffer=(binder_uintptr_t)&freebuf};
                 if(ioctl(fd,BINDER_WRITE_READ,&freeio)<0) fail("register: free reply");
+            } else if(cmd==BR_TRANSACTION_COMPLETE) {
+                puts("REGISTER Binder transaction completed");
             } else if(cmd==BR_FAILED_REPLY || cmd==BR_DEAD_REPLY) {
                 fprintf(stderr,"FAIL registration Binder reply code=%u\n",cmd);
                 return 4;
