@@ -31,9 +31,17 @@ int main(void) {
   }
   if(child<0){perror("fork");return 1;}
   int status=0;
-  waitpid(child,&status,0);
-  if(WIFEXITED(status))printf("RESULT real Android 11 servicemanager exited status=%d\n",WEXITSTATUS(status));
-  else if(WIFSIGNALED(status))printf("RESULT real Android 11 servicemanager signal=%d\n",WTERMSIG(status));
+  sleep(5);
+  pid_t result=waitpid(child,&status,WNOHANG);
+  if(result==0) {
+    logmsg("PASS real Android 11 servicemanager process alive after 5 seconds\n");
+  } else if(result==child) {
+    if(WIFEXITED(status))printf("RESULT real Android 11 servicemanager exited status=%d\n",WEXITSTATUS(status));
+    else if(WIFSIGNALED(status))printf("RESULT real Android 11 servicemanager signal=%d\n",WTERMSIG(status));
+  } else {
+    perror("waitpid servicemanager");
+    logmsg("FAIL servicemanager waitpid\n");
+  }
   fflush(stdout);
   for(;;)pause();
 }
