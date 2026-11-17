@@ -20,13 +20,25 @@ loop=$(losetup -f --show "$backing")
 key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 # The offset is expressed in 512-byte sectors: 16 sectors => DUN 2.
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
-dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 oflag=direct conv=notrunc,fsync 2>/dev/null
+if ! dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 oflag=direct conv=notrunc,fsync 2>"$DK_TEST_DIR/gate2-direct-write.err"; then
+  echo 'FAIL gate2: O_DIRECT mapped write failed; dd stderr follows' >&2
+  cat "$DK_TEST_DIR/gate2-direct-write.err" >&2
+  dmsetup status dk_test >&2 || :
+  dmesg | tail -40 >&2 || :
+  exit 1
+fi
+echo 'PASS gate2 diagnostic: O_DIRECT mapped write completed'
 # Force the backing device's buffered state to disk before validating raw bytes.
 sync
 blockdev --flushbufs "$loop" 2>/dev/null || :
 dd if="$loop" of="$DK_TEST_DIR/cipher.bin" bs=4096 count=1 iflag=direct 2>/dev/null
 dd if="$backing" of="$DK_TEST_DIR/cipher-file.bin" bs=4096 count=1 2>/dev/null
-dd if=/dev/mapper/dk_test of="$DK_TEST_DIR/mapped-read.bin" bs=4096 count=1 iflag=direct 2>/dev/null
+if ! dd if=/dev/mapper/dk_test of="$DK_TEST_DIR/mapped-read.bin" bs=4096 count=1 iflag=direct 2>"$DK_TEST_DIR/gate2-direct-read.err"; then
+  echo 'FAIL gate2: O_DIRECT mapped read failed; dd stderr follows' >&2
+  cat "$DK_TEST_DIR/gate2-direct-read.err" >&2
+  dmesg | tail -40 >&2 || :
+  exit 1
+fi
 echo 'Gate 2 diagnostic: mapped roundtrip, raw loop, backing file'
 if cmp -s "$DK_TEST_DIR/mapped-read.bin" "$DK_VECTOR_DIR/xts-plain-4096.bin"; then
   echo 'PASS gate2 diagnostic: mapped read returns original plaintext'
