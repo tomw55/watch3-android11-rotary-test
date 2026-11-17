@@ -22,7 +22,7 @@ key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
 # Capture the live target geometry and loop dependency without printing the key.
 echo 'Gate 2 device mapping (key redacted by dmsetup):'
-dmsetup table dk_test
+dmsetup table dk_test | sed -E 's/[[:xdigit:]]{128}/[REDACTED_KEY]/g'
 dmsetup status dk_test
 dmsetup deps dk_test
 losetup -a
