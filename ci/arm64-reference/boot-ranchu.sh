@@ -79,7 +79,14 @@ PYGPT
     dd if="$vendor_disk" of="$work/vendor-diagnostic.ext4" bs=4M \
         iflag=skip_bytes,count_bytes skip="$vendor_offset" count="$vendor_length" status=none
     test "$(od -An -j1080 -N2 -tx1 "$work/vendor-diagnostic.ext4" | tr -d '[:space:]')" = 53ef
-    cat > "$work/dk-logcat.rc" <<'RC'
+    # Use the already-imported ranchu rc rather than relying on new-file discovery.
+    rc_path=/etc/init/hw/init.ranchu.rc
+    debugfs -R "dump $rc_path $work/init.ranchu.rc" "$work/vendor-diagnostic.ext4" > "$out/logcat-injection.txt" 2>&1
+    test -s "$work/init.ranchu.rc"
+    cp "$work/init.ranchu.rc" "$work/init.ranchu.original.rc"
+    cat >> "$work/init.ranchu.rc" <<'RC'
+
+# QEMU-only vold diagnostic. stdout/stderr goes to the kernel log buffer.
 service dk_vold_logcat /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E
     class core
     user root
@@ -87,15 +94,22 @@ service dk_vold_logcat /system/bin/logcat -b main -b system -b crash -v threadti
     seclabel u:r:logd:s0
     stdio_to_kmsg
     disabled
-    oneshot
 
 on post-fs
     start dk_vold_logcat
 RC
-    debugfs -w -R "write $work/dk-logcat.rc /etc/init/dk-logcat.rc" "$work/vendor-diagnostic.ext4" > "$out/logcat-injection.txt" 2>&1
-    debugfs -w -R "ea_set /etc/init/dk-logcat.rc security.selinux u:object_r:vendor_configs_file:s0" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
-    debugfs -R "cat /etc/init/dk-logcat.rc" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "rm $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "write $work/init.ranchu.rc $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $rc_path uid 0" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $rc_path gid 0" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $rc_path mode 0100644" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -w -R "ea_set $rc_path security.selinux u:object_r:vendor_configs_file:s0" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -R "stat $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -R "ea_list $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
+    debugfs -R "cat $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
     grep -Fq 'service dk_vold_logcat' "$out/logcat-injection.txt"
+    grep -Fq 'Mode:  0644' "$out/logcat-injection.txt" || grep -Eq 'Mode: +0100644|Mode: +0644' "$out/logcat-injection.txt"
+    grep -Fq 'vendor_configs_file' "$out/logcat-injection.txt"
     dd if="$work/vendor-diagnostic.ext4" of="$vendor_disk" bs=4M \
         oflag=seek_bytes seek="$vendor_offset" conv=notrunc status=none
 fi
