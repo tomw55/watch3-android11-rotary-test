@@ -149,6 +149,8 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     done < <(find "$work/android-guest" -type f -print0)
     # gen_init_cpio requires parent directories before their children.
     # The archive contains regular ELF files, not symlinks.
+    sed -i '1i dir /system/etc/selinux 755 0 0' "$work/initramfs.list"
+    sed -i '1i dir /system/etc 755 0 0' "$work/initramfs.list"
     sed -i '1i dir /system/lib64 755 0 0' "$work/initramfs.list"
     sed -i '1i dir /system/bin 755 0 0' "$work/initramfs.list"
     sed -i '1i dir /system 755 0 0' "$work/initramfs.list"
