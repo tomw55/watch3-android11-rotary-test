@@ -9,9 +9,13 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root"/{proc,sys,dev,tmp,run,tests,vectors}
 # Alpine's host apk installs *aarch64* packages without running guest code.
 docker run --rm -v "$root:/guest" alpine:3.20 sh -ec '
-  apk --root /guest --keys-dir /etc/apk/keys --arch aarch64 --initdb --no-scripts \
+  mkdir -p /guest/etc/apk/keys
+  cp /etc/apk/keys/*.rsa.pub /guest/etc/apk/keys/
+  apk --root /guest --keys-dir /guest/etc/apk/keys --arch aarch64 --initdb --no-scripts \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
     add alpine-baselayout busybox device-mapper util-linux coreutils
+  test -x /guest/bin/busybox
+  test -x /guest/sbin/dmsetup
 '
 python3 -c 'from cryptography.hazmat.primitives.ciphers import Cipher' 2>&1 | tee "$out/vector-dependency.log"
 python3 scripts/dm-default-key-xts-reference.py --output "$root/vectors" | tee "$out/reference-generation.log"
