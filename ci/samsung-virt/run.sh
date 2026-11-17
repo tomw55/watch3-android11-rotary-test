@@ -147,9 +147,11 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         guestpath="${guestfile#"$work/android-guest"}"
         echo "file $guestpath $guestfile 755 0 0" >> "$work/initramfs.list"
     done < <(find "$work/android-guest" -type f -print0)
-    for guestdir in /system /system/bin /system/lib64; do
-        sed -i "1i dir $guestdir 755 0 0" "$work/initramfs.list"
-    done
+    # gen_init_cpio requires parent directories before their children.
+    # The archive contains regular ELF files, not symlinks.
+    sed -i '1i dir /system/lib64 755 0 0' "$work/initramfs.list"
+    sed -i '1i dir /system/bin 755 0 0' "$work/initramfs.list"
+    sed -i '1i dir /system 755 0 0' "$work/initramfs.list"
 fi
 "$work/gen_init_cpio" "$work/initramfs.list" > "$out/initramfs.cpio"
 cp "$work/test.policy" "$out/"
@@ -165,8 +167,13 @@ printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     grep -Fq 'PASS guest servicemanager init started' "$out/serial.log"
-    grep -Fq 'RESULT real Android 11 servicemanager' "$out/serial.log" || {
-        echo 'Real servicemanager did not exit; inspect serial log for whether it remained running' >&2
+    grep -Fq 'PASS Binder device opened for real servicemanager test' "$out/serial.log"
+    if grep -Eq 'RESULT real Android 11 servicemanager (exited|signal=)|exec servicemanager:|FAIL ' "$out/serial.log"; then
+        echo 'FAIL real Android 11 servicemanager terminated or failed to exec' >&2
+        exit 1
+    fi
+    grep -Fq 'PASS real Android 11 servicemanager process alive' "$out/serial.log" || {
+        echo 'FAIL no proof that Android 11 servicemanager stayed running' >&2
         exit 1
     }
     stage=complete
