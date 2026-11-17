@@ -48,17 +48,39 @@ int main(void) {
   int fd=open("/dev/binder",O_RDWR);
   if(fd<0){perror("open /dev/binder");logmsg("FAIL Binder device unavailable\n");}
   else {logmsg("PASS Binder device opened for real servicemanager test\n");close(fd);}
+  // Preserve the genuine process stderr/stdout, including Android abort messages.
+  int childpipe[2]={-1,-1};
+  if(pipe2(childpipe,O_CLOEXEC|O_NONBLOCK)<0) {
+    perror("pipe2 servicemanager diagnostics");
+    logmsg("FAIL servicemanager diagnostic pipe unavailable\\n");
+    return 1;
+  }
   pid_t child=fork();
   if(child==0){
+    close(childpipe[0]);
+    if(dup2(childpipe[1],1)<0 || dup2(childpipe[1],2)<0) _exit(126);
+    close(childpipe[1]);
     setenv("LD_LIBRARY_PATH","/system/lib64",1);
     setenv("ANDROID_LOG_TAGS","*:v",1);
     execl("/system/bin/servicemanager","servicemanager",NULL);
     perror("exec servicemanager");
     _exit(127);
   }
-  if(child<0){perror("fork");return 1;}
+  close(childpipe[1]);
+  if(child<0){perror("fork");close(childpipe[0]);return 1;}
   int status=0;
   for(int i=0;i<50;i++) {
+    {
+      char buf[2048];
+      ssize_t n;
+      while((n=read(childpipe[0],buf,sizeof(buf)-1))>0) {
+        buf[n]=0;
+        logmsg("SERVICEMANAGER STDOUT/ERR: ");
+        // Preserve output exactly, including fatal libc and linker diagnostics.
+        logmsg(buf);
+        if(buf[n-1]!='\\n') logmsg("\\n");
+      }
+    }
     if(logfd>=0) {
       char buf[4096];
       ssize_t n;
@@ -76,6 +98,18 @@ int main(void) {
     }
     usleep(100000);
   }
+  // Drain messages emitted immediately before a fatal exit.
+  {
+    char buf[2048];
+    ssize_t n;
+    while((n=read(childpipe[0],buf,sizeof(buf)-1))>0) {
+      buf[n]=0;
+      logmsg("SERVICEMANAGER STDOUT/ERR: ");
+      logmsg(buf);
+      if(buf[n-1]!='\\n') logmsg("\\n");
+    }
+  }
+  close(childpipe[0]);
   pid_t result=waitpid(child,&status,WNOHANG);
   if(result==0) {
     logmsg("PASS real Android 11 servicemanager process alive after 5 seconds\n");
