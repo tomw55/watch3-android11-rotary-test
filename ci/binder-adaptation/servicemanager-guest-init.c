@@ -17,6 +17,8 @@ int main(void) {
   mkdir("/proc",0755); mkdir("/sys",0755); mkdir("/dev",0755);
   mount("proc","/proc","proc",0,NULL);
   mount("sysfs","/sys","sysfs",0,NULL);
+  mkdir("/sys/fs",0755); mkdir("/sys/fs/selinux",0755);
+  if(mount("selinuxfs","/sys/fs/selinux","selinuxfs",0,NULL)<0) perror("mount selinuxfs");
   mount("devtmpfs","/dev","devtmpfs",0,NULL);
   int console=open("/dev/console",O_RDWR);
   if(console>=0){dup2(console,0);dup2(console,1);dup2(console,2);}
@@ -36,6 +38,12 @@ int main(void) {
   }
   if(access("/dev/kmsg",F_OK)!=0)
     mknod("/dev/kmsg",S_IFCHR|0600,makedev(1,11));
+  if(access("/system/etc/selinux/plat_service_contexts",R_OK)==0)
+    logmsg("PASS Android 11 platform service contexts available\n");
+  else logmsg("WARN Android 11 platform service contexts unavailable\n");
+  if(access("/sys/fs/selinux/policy",R_OK)==0)
+    logmsg("PASS SELinux policy interface available\n");
+  else logmsg("WARN SELinux policy interface unavailable\n");
   mkdir("/dev/binderfs",0755);
   int fd=open("/dev/binder",O_RDWR);
   if(fd<0){perror("open /dev/binder");logmsg("FAIL Binder device unavailable\n");}
