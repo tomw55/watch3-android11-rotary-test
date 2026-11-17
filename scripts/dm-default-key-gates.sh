@@ -20,6 +20,13 @@ loop=$(losetup -f --show "$backing")
 key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 # The offset is expressed in 512-byte sectors: 16 sectors => DUN 2.
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
+# Capture the live target geometry and loop dependency without printing the key.
+echo 'Gate 2 device mapping (key redacted by dmsetup):'
+dmsetup table dk_test
+dmsetup status dk_test
+dmsetup deps dk_test
+losetup -a
+echo "Gate 2 loop device: $loop"
 # Samsung 4.9 rejects O_DIRECT at open on this dm block device (EINVAL).
 # Use synchronous buffered I/O and explicitly flush the mapped block device.
 if ! dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 conv=notrunc,fsync 2>"$DK_TEST_DIR/gate2-write.err"; then
@@ -57,6 +64,8 @@ fi
 # INFO-level driver traces may be hidden from the serial console; dump the
 # kernel ring buffer explicitly after writeback, without changing AES-XTS.
 sync
+echo 'Gate 2 device mapping after writeback:'
+dmsetup deps dk_test
 echo 'Gate 2 kernel write-path diagnostics (dmesg):'
 dmesg | grep -E 'dk_test (map_write|write_submit|write_endio)|device-mapper: default-key' || :
 echo 'PASS gate2 diagnostic: mapped write and fsync completed; ciphertext KAT follows'
