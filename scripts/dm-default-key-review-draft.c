@@ -285,7 +285,7 @@ static void dk_write_endio(struct bio *clone)
 	struct default_key_c *cc = io->cc;
 	int err = clone->bi_error;
 
-	DMINFO("dk_test write_endio: sector=%llu err=%d", (unsigned long long)io->rel_sector, err);
+	pr_warn("dm-default-key dk_test write_endio: sector=%llu err=%d", (unsigned long long)io->rel_sector, err);
 	dk_free_bounce_bio(cc, clone);
 	dk_finish_base_bio(io, err);
 }
@@ -339,7 +339,7 @@ static void dk_write_work(struct work_struct *work)
 		return;
 	}
 
-	DMINFO("dk_test write_submit: sector=%llu op=%u bytes=%u", (unsigned long long)io->rel_sector, bio_op(clone), clone->bi_iter.bi_size);
+	pr_warn("dm-default-key dk_test write_submit: sector=%llu op=%u bytes=%u", (unsigned long long)io->rel_sector, bio_op(clone), clone->bi_iter.bi_size);
 	generic_make_request(clone);
 }
 
@@ -426,7 +426,7 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	}
 
 	if (bio_op(bio) == REQ_OP_WRITE) {
-		DMINFO("dk_test map_write: sector=%llu bytes=%u", (unsigned long long)rel_sector, bio->bi_iter.bi_size);
+		pr_warn("dm-default-key dk_test map_write: sector=%llu bytes=%u", (unsigned long long)rel_sector, bio->bi_iter.bi_size);
 		INIT_WORK(&io->work, dk_write_work);
 		queue_work(cc->io_queue, &io->work);
 		return DM_MAPIO_SUBMITTED;
