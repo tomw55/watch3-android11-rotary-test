@@ -187,10 +187,10 @@ fi
 # Compile against the Android NDK Binder API, but link to the genuine
 # Android 11 runtime extracted from the emulator system partition.
 ndk="$ANDROID_HOME/ndk/23.2.8568313/toolchains/llvm/prebuilt/linux-x86_64/bin"
-"$ndk/aarch64-linux-android30-clang" -std=c11 -Wall -Wextra -Werror -O2 \\
-  "$PWD/ci/binder-adaptation/register-test-service-ndk.c" \\
-  -L "$out/guest/system/lib64" -lbinder_ndk \\
-  -Wl,--dynamic-linker=/system/bin/linker64 \\
+"$ndk/aarch64-linux-android30-clang" -std=c11 -Wall -Wextra -Werror -O2 \
+  "$PWD/ci/binder-adaptation/register-test-service-ndk.c" \
+  -L "$out/guest/system/lib64" -lbinder_ndk \
+  -Wl,--dynamic-linker=/system/bin/linker64 \
   -o "$out/guest/system/bin/register-test-service-ndk"
 readelf -d "$out/guest/system/bin/register-test-service-ndk" | tee "$out/ndk-registrar-dependencies.txt"
 # Ensure the runtime has every shared library the new executable requires.
