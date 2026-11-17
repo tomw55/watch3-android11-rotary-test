@@ -79,7 +79,12 @@ with open(src, 'rb') as f:
 PY
 if test -s "$out/super.img"; then
   mkdir -p "$out/logical"
-  lpunpack "$out/super.img" "$out/logical" | tee "$out/lpunpack.log"
+  # Pinned, inspectable Python implementation; Ubuntu 22.04 lacks lpunpack.
+  curl -fsSL --retry 4 \
+    https://raw.githubusercontent.com/unix3dgforce/lpunpack/c59b8f3b069c5a8aa438a049fa4a091177172434/lpunpack.py \
+    -o "$out/lpunpack.py"
+  sha256sum "$out/lpunpack.py" > "$out/lpunpack-source.sha256"
+  python3 "$out/lpunpack.py" "$out/super.img" "$out/logical" | tee "$out/lpunpack.log"
   find "$out/logical" -maxdepth 1 -type f -printf '%f %s bytes\\n' | tee "$out/logical-partitions.txt"
   for name in system_a system; do
     if test -s "$out/logical/$name.img"; then
