@@ -519,8 +519,10 @@ if (argc < 6) {
 ti->error = "Not enough arguments";
 return -EINVAL;
 }
-if (strcmp(argv[0], "AES-256-XTS") != 0) {
-ti->error = "Unsupported cipher (requires AES-256-XTS)";
+if (strcmp(argv[0], "AES-256-XTS") != 0 &&
+    strcmp(argv[0], "aes-xts-plain64") != 0) {
+DMERR("Unsupported default-key cipher identifier: %s", argv[0]);
+ti->error = "Unsupported cipher (AES-256-XTS or aes-xts-plain64)";
 return -EINVAL;
 }
 if (strlen(argv[1]) != DK_AES_256_XTS_KEY_SIZE * 2 ||
