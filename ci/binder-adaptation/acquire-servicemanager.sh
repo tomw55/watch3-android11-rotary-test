@@ -142,7 +142,7 @@ while pending:
     if "AArch64" not in hdr.stdout:
         raise RuntimeError(f"Not AArch64: {path}")
     dyn = subprocess.run(["readelf", "-d", str(dest)], capture_output=True, text=True)
-    for lib in re.findall(r"Shared library: \\[([^]]+)\\]", dyn.stdout):
+    for lib in re.findall(r"Shared library: \[([^]]+)\]", dyn.stdout):
         dep = "/system/lib64/" + lib
         if dep not in seen and dep not in pending:
             pending.append(dep)
