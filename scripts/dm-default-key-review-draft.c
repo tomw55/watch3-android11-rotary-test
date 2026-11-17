@@ -375,8 +375,9 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	sector_t rel_sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	struct dk_io *io;
 
-	/* Empty flush control bio */
-	if (unlikely((bio->bi_opf & REQ_PREFLUSH) && bio->bi_iter.bi_size == 0)) {
+	/* Linux 4.9 empty flush bios may use REQ_OP_FLUSH rather than REQ_PREFLUSH. */
+	if (unlikely(bio_op(bio) == REQ_OP_FLUSH ||
+		     ((bio->bi_opf & REQ_PREFLUSH) && bio->bi_iter.bi_size == 0))) {
 		bio->bi_bdev = cc->dev->bdev;
 		bio->bi_iter.bi_sector = cc->start + rel_sector;
 		return DM_MAPIO_REMAPPED;
