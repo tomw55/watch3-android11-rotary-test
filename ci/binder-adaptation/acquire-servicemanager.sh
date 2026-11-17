@@ -168,5 +168,21 @@ if missing:
 (root.parent / "guest-manifest.txt").write_text("\\n".join(sorted(seen)) + "\\n")
 print("PASS Android 11 recursive ELF dependencies packaged", flush=True)
 PY
+# Android's servicemanager requires the platform SELinux service label map.
+# Copy it from the same Android 11 image instead of silently omitting it.
+mkdir -p "$out/guest/system/etc/selinux"
+contexts="$out/guest/system/etc/selinux/plat_service_contexts"
+for source in /system/etc/selinux/plat_service_contexts /etc/selinux/plat_service_contexts; do
+  rm -f "$contexts"
+  debugfs -R "dump $source $contexts" "$out/system.ext4.img" >/dev/null 2>&1 || true
+  if test -s "$contexts"; then
+    echo "EXTRACTED Android 11 SELinux service contexts: $source"
+    break
+  fi
+done
+if ! test -s "$contexts"; then
+  echo "WARN Android 11 platform service contexts absent from image" >&2
+  rm -f "$contexts"
+fi
 tar -C "$out/guest" -czf "$out/android11-servicemanager-guest.tar.gz" system
 sha256sum "$out/android11-servicemanager-guest.tar.gz" > "$out/guest-archive.sha256"
