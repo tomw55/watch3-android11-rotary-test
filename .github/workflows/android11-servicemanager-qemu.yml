@@ -1,0 +1,46 @@
+name: Android 11 real servicemanager QEMU launch
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - '.github/workflows/android11-servicemanager-qemu.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-servicemanager:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android extraction and QEMU kernel build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+      - name: Extract genuine Android 11 ARM64 servicemanager and recursive libraries
+        run: bash ci/binder-adaptation/acquire-servicemanager.sh
+      - name: Launch real servicemanager against patched Samsung Binder kernel
+        run: |
+          set -o pipefail
+          BINDER_STAGE1_PATCH="$GITHUB_WORKSPACE/ci/binder-adaptation/context-manager-stage1.patch" \
+          BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
+          SERVICEMANAGER_GUEST_TAR="$GITHUB_WORKSPACE/servicemanager-binary/android11-servicemanager-guest.tar.gz" \
+          bash ci/samsung-virt/run.sh 2>&1 | tee servicemanager-binary/qemu-runner.log
+      - name: Upload execution and binary evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android11-real-servicemanager-qemu-${{ github.run_id }}
+          path: |
+            servicemanager-binary/*.txt
+            servicemanager-binary/*.log
+            samsung-virt-evidence/serial.log
+            samsung-virt-evidence/result.txt
+            samsung-virt-evidence/runner.log
+          retention-days: 7
