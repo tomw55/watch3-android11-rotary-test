@@ -415,7 +415,14 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	io->clone_bio = NULL;
 	io->rel_sector = rel_sector;
 
-	if (bio_op(bio) != REQ_OP_READ && bio_op(bio) != REQ_OP_WRITE) {\n\t\tkfree(io);\n\t\tbio->bi_error = -EOPNOTSUPP;\n\t\tbio_endio(bio);\n\t\treturn DM_MAPIO_SUBMITTED;\n\t}\n\n\tif (bio_op(bio) == REQ_OP_WRITE) {
+	if (bio_op(bio) != REQ_OP_READ && bio_op(bio) != REQ_OP_WRITE) {
+		kfree(io);
+		bio->bi_error = -EOPNOTSUPP;
+		bio_endio(bio);
+		return DM_MAPIO_SUBMITTED;
+	}
+
+	if (bio_op(bio) == REQ_OP_WRITE) {
 		INIT_WORK(&io->work, dk_write_work);
 		queue_work(cc->io_queue, &io->work);
 		return DM_MAPIO_SUBMITTED;
@@ -501,8 +508,6 @@ return 0;
  * AES-256-XTS <128-hex-key> <iv_offset> <dev_path> <start_sector>
  * <num_opt_params> sector_size:4096 iv_large_sectors [allow_discards]
 */
-static void default_key_dtr(struct dm_target *ti);
-
 static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 struct default_key_c *cc;
