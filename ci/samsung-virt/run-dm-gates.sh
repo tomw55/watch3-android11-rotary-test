@@ -11,7 +11,8 @@ mkdir -p "$root"/{proc,sys,dev,tmp,run,tests,vectors}
 docker run --rm -v "$root:/guest" alpine:3.20 sh -ec '
   mkdir -p /guest/etc/apk/keys
   cp /etc/apk/keys/*.rsa.pub /guest/etc/apk/keys/
-  apk --root /guest --keys-dir /guest/etc/apk/keys --arch aarch64 --initdb --no-scripts \
+  ls -l /guest/etc/apk/keys/*.rsa.pub
+  apk --root /guest --arch aarch64 --initdb --no-scripts \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.20/main \
     add alpine-baselayout busybox device-mapper util-linux coreutils
   test -x /guest/bin/busybox
