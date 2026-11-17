@@ -35,6 +35,10 @@ int main(void) {
     size_t n=0;
     put32(data,&n,0);
     put32(data,&n,(uint32_t)-1);
+    /* Android 11 libbinder Parcel::writeInterfaceToken includes the
+     * SYSTEM header after strict-mode and work-source fields. Without
+     * this word enforceInterface rejects the entire request. */
+    put32(data,&n,0x53595354U); /* B_PACK_CHARS(S,Y,S,T) */
     utf16(data,&n,"android.os.IServiceManager");
     utf16(data,&n,"watch3.test.echo");
     size_t object_offset=n;
