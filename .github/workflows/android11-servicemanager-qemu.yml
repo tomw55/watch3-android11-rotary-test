@@ -4,6 +4,8 @@ on:
     branches: [test/binder-android11-adaptation]
     paths:
       - '.github/workflows/android11-servicemanager-qemu.yml'
+      - 'ci/binder-adaptation/acquire-servicemanager.sh'
+      - 'ci/binder-adaptation/servicemanager-guest-init.c'
   workflow_dispatch:
 permissions:
   contents: read
