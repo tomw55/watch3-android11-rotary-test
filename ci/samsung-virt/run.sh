@@ -45,7 +45,13 @@ sed -i '\|^#include <soc/samsung/exynos-powermode.h>$|d' kernel/cpu.c
 # No graphics are needed for this serial-only guest. Samsung's unconditional
 # GPU entry otherwise expects arm/built-in.o even with Mali deselected.
 grep -Eq '^obj-y[[:space:]]*\+=[[:space:]]*gpu/[[:space:]]*$' drivers/Makefile
+if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
+    grep -Fq 'drm/ vga/ arm/ exynos/' drivers/gpu/Makefile
+    sed -i 's@drm/ vga/ arm/ exynos/@drm/ vga/@' drivers/gpu/Makefile
+    printf '\nconfig DRM_VIRTIO_GPU\n\tselect HDMI\n' >> drivers/gpu/drm/virtio/Kconfig
+else
 sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
+fi
 echo "Excluded the GPU subtree from this headless virt build."
 # The schedutil object owns this sysctl variable. Do not advertise the
 # control when the guest does not build that governor into the kernel.
@@ -128,6 +134,7 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     probe_source="$repo/ci/binder-adaptation/servicemanager-guest-init.c"
     if [[ ${HIDL_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/hidl-baseline/guest-init.c"; fi
     if [[ ${HIDL_SERVICE_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/hidl-service/guest-init.c"; fi
+    if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/graphics-hidl/guest-init.c"; fi
 fi
 probe_flags=()
 if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
@@ -167,6 +174,11 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     done < <(find "$work/android-guest" -type f -print0)
     # gen_init_cpio requires parent directories before their children.
     # The archive contains regular ELF files, not symlinks.
+    if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
+        sed -i '1i dir /vendor/lib64/hw 755 0 0' "$work/initramfs.list"
+        sed -i '1i dir /vendor/lib64 755 0 0' "$work/initramfs.list"
+        sed -i '1i dir /vendor 755 0 0' "$work/initramfs.list"
+    fi
     sed -i '1i dir /system/etc/selinux 755 0 0' "$work/initramfs.list"
     sed -i '1i dir /system/etc 755 0 0' "$work/initramfs.list"
     sed -i '1i dir /system/lib64 755 0 0' "$work/initramfs.list"
@@ -179,9 +191,11 @@ cp "$work/test.policy" "$out/"
 stage=qemu
 # A PASS marker must be present even if QEMU is terminated by the timeout.
 rc=0
+graphics_devices=()
+if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then graphics_devices=(-device virtio-gpu-pci); fi
 timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
     -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
-    -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/initramfs.cpio" \
+    -serial stdio -no-reboot "${graphics_devices[@]}" -kernel "$out/Image" -initrd "$out/initramfs.cpio" \
     -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' > "$out/serial.log" 2>&1 || rc=$?
 printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
@@ -190,6 +204,9 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         for marker in 'PASS fixture SELinux policy loaded and readable' 'PASS hwservicemanager alive' 'PASS HIDL manager list' 'PASS HIDL self lookup ping interfaceChain' 'PASS HIDL transport baseline'; do
             grep -Fq "$marker" "$out/serial.log" || { echo "Missing HIDL marker: $marker" >&2; exit 1; }
         done
+        if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
+            python3 "$repo/ci/graphics-hidl/verify.py" "$out/serial.log"
+        fi
         if [[ ${HIDL_SERVICE_GUEST:-0} == 1 ]]; then
             for marker in 'PASS HIDL fixture registered' 'PASS HIDL typed lifecycle and negative controls' 'PASS registered HIDL service gate'; do
                 grep -Fq "$marker" "$out/serial.log" || { echo "Missing registered-HIDL marker: $marker" >&2; exit 1; }
@@ -250,7 +267,7 @@ if [[ -n ${REFERENCE_POLICY:-} ]]; then
     qemu_rc=0
     timeout 45 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
         -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
-        -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/android-policy-initramfs.cpio" \
+        -serial stdio -no-reboot "${graphics_devices[@]}" -kernel "$out/Image" -initrd "$out/android-policy-initramfs.cpio" \
         -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' \
         > "$out/android-policy-serial.log" 2>&1 || qemu_rc=$?
     printf '%s\n' "$qemu_rc" > "$out/android-policy-qemu-exit.txt"

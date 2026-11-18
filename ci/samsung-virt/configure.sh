@@ -59,6 +59,9 @@ fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     cat "$ANDROID_INIT_FRAGMENT" >> "$fragment"
 fi
+if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
+    cat "$(dirname "$0")/../drm-buffer-gate/drm.config" >> "$fragment"
+fi
 KCONFIG_ALLCONFIG="$fragment" make allnoconfig
 make olddefconfig
 for symbol in ARCH_VEXPRESS ARM_GIC ARM_PSCI_FW ARM_ARCH_TIMER VIRTIO_MMIO SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE \
@@ -76,3 +79,9 @@ for symbol in ARCH_EXYNOS NOBLESSE SECURITY_SMACK SECURITY_SELINUX_DEVELOP; do
         exit 1
     fi
 done
+
+if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
+    for symbol in PCI PCI_HOST_GENERIC VIRTIO_PCI DRM DRM_VIRTIO_GPU SYNC_FILE; do
+        grep -Fx "CONFIG_$symbol=y" .config
+    done
+fi
