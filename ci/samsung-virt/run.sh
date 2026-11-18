@@ -99,6 +99,36 @@ if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     stage=dm-default-key-integration
     test ! -e drivers/md/dm-default-key.c
     cp "$repo/scripts/dm-default-key-review-draft.c" drivers/md/dm-default-key.c
+    # QEMU-only core dispatch probe, inserted into the exact kernel tree built here.
+    # Fail at build time if Samsung's dm.c layout changes rather than silently
+    # producing another kernel without the intended instrumentation.
+    python3 - <<'PYDMTRACE'
+from pathlib import Path
+import re
+p = Path("drivers/md/dm.c")
+s = p.read_text()
+pattern = r'(static void __map_bio\s*\([^)]*\)\s*\{)'
+matches = list(re.finditer(pattern, s))
+if len(matches) != 1:
+    raise SystemExit("Expected exactly one Samsung dm.c __map_bio definition; found %d" % len(matches))
+probe = r'''
+    pr_warn("dm-core __map_bio: target=%s op=%u sector=%llu bytes=%u\\n",
+            tio->ti->type->name, bio_op(tio->clone),
+            (unsigned long long)tio->clone->bi_iter.bi_sector,
+            tio->clone->bi_iter.bi_size);
+'''
+# tio fields vary across DM versions: use only a constant trace to avoid
+# relying on a particular Samsung struct layout.
+probe = '    pr_warn("dm-core __map_bio entered\\n");\n'
+m = matches[0]
+s = s[:m.end()] + '\n' + probe + s[m.end():]
+p.write_text(s)
+print("Installed QEMU-only dm-core __map_bio entry probe")
+PYDMTRACE
+    if ! grep -Fq 'dm-default-key map_entry:' drivers/md/dm-default-key.c; then
+        echo 'Missing target map_entry trace in staged driver' >&2
+        exit 1
+    fi
     cat >> drivers/md/Kconfig <<'DK_KCONFIG'
 
 config DM_DEFAULT_KEY
