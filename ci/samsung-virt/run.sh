@@ -143,8 +143,15 @@ sed -i '\|^#include <soc/samsung/exynos-powermode.h>$|d' kernel/cpu.c
 # No graphics are needed for this serial-only guest. Samsung's unconditional
 # GPU entry otherwise expects arm/built-in.o even with Mali deselected.
 grep -Eq '^obj-y[[:space:]]*\+=[[:space:]]*gpu/[[:space:]]*$' drivers/Makefile
-sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
-echo "Excluded the GPU subtree from this headless virt build."
+if [[ ${DRM_BUFFER_GATE:-0} == 1 ]]; then
+    # The archive has no gpu/arm/Makefile. Keep generic DRM/VGA only.
+    grep -Fq 'drm/ vga/ arm/ exynos/' drivers/gpu/Makefile
+    sed -i 's@drm/ vga/ arm/ exynos/@drm/ vga/@' drivers/gpu/Makefile
+    echo "Retained generic DRM GPU subtree for the disposable buffer gate."
+else
+    sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
+    echo "Excluded the GPU subtree from this headless virt build."
+fi
 # The schedutil object owns this sysctl variable. Do not advertise the
 # control when the guest does not build that governor into the kernel.
 python3 - <<'PYFIX'
@@ -986,6 +993,11 @@ fi
 stage=build
 make -k -j"$(nproc)" Image 2>&1 | tee "$out/build.log"
 cp arch/arm64/boot/Image System.map "$out/"
+if [[ ${DRM_BUFFER_GATE:-0} == 1 ]]; then
+    grep -E ' [tT] (drm_core_init|virtio_gpu_probe)$' System.map > "$out/drm-symbols.txt"
+    grep -q ' drm_core_init$' "$out/drm-symbols.txt"
+    grep -q ' virtio_gpu_probe$' "$out/drm-symbols.txt"
+fi
 test "$(od -An -j56 -N4 -tx1 "$out/Image" | tr -d '[:space:]')" = 41524d64
 for symbol in binder_init selinux_init pl011_console_write gic_init_bases psci_dt_init arch_timer_of_init; do
     grep -w "$symbol" "$out/System.map" || echo "Symbol absent: $symbol"
