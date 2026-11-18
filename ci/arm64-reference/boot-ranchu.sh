@@ -108,7 +108,7 @@ PYGPT
     cat >> "$work/init.ranchu.rc" <<'RC'
 
 # QEMU-only diagnostic using the stock shell console domain and serial output.
-service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; if grep -q ' /sys/fs/fuse/connections fusectl ' /proc/mounts; then echo PASS_QEMU_FUSECTL_MOUNT; else echo NOT_OBSERVED_QEMU_FUSECTL_MOUNT; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
+service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; if grep -q ' /sys/fs/fuse/connections fusectl ' /proc/mounts; then echo PASS_QEMU_FUSECTL_MOUNT; else echo NOT_OBSERVED_QEMU_FUSECTL_MOUNT; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V Zygote:I ZygoteInit:I installd:V AndroidRuntime:I *:E"
     class core
     user root
     group shell log readproc
