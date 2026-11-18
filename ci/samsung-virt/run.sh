@@ -127,6 +127,7 @@ probe_source="$repo/ci/samsung-virt/probe.c"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     probe_source="$repo/ci/binder-adaptation/servicemanager-guest-init.c"
     if [[ ${HIDL_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/hidl-baseline/guest-init.c"; fi
+    if [[ ${HIDL_SERVICE_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/hidl-service/guest-init.c"; fi
 fi
 probe_flags=()
 if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
@@ -189,6 +190,12 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         for marker in 'PASS fixture SELinux policy loaded and readable' 'PASS hwservicemanager alive' 'PASS HIDL manager list' 'PASS HIDL self lookup ping interfaceChain' 'PASS HIDL transport baseline'; do
             grep -Fq "$marker" "$out/serial.log" || { echo "Missing HIDL marker: $marker" >&2; exit 1; }
         done
+        if [[ ${HIDL_SERVICE_GUEST:-0} == 1 ]]; then
+            for marker in 'PASS HIDL fixture registered' 'PASS HIDL typed lifecycle and negative controls' 'PASS registered HIDL service gate'; do
+                grep -Fq "$marker" "$out/serial.log" || { echo "Missing registered-HIDL marker: $marker" >&2; exit 1; }
+            done
+            python3 "$repo/ci/hidl-service/verify-serial.py" "$out/serial.log"
+        fi
         if grep -Eq 'FAIL |Kernel panic|Call trace:' "$out/serial.log"; then exit 1; fi
         stage=complete; exit 0
     fi
