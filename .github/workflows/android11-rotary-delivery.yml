@@ -1,6 +1,9 @@
 name: Android 11 rotary delivery
 on:
   workflow_dispatch:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths: ['.github/workflows/android11-rotary-delivery.yml']
 permissions:
   contents: read
 jobs:
