@@ -94,7 +94,6 @@ service dk_vold_logcat /system/bin/logcat -b main -b system -b crash -v threadti
     class core
     user root
     group log readproc
-    seclabel u:r:logd:s0
     stdio_to_kmsg
     disabled
 
