@@ -106,7 +106,7 @@ PYGPT
     cat >> "$work/init.ranchu.rc" <<'RC'
 
 # QEMU-only diagnostic using the stock shell console domain and serial output.
-service dk_vold_logcat /system/bin/sh -c "exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
+service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
     class core
     user root
     group shell log readproc
@@ -193,6 +193,12 @@ if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
     sed -n '1,100p' "$out/samsung-binder-diagnostics.txt"
     python3 "$(dirname "$0")/samsung-init-report.py" "$out" | tee "$out/samsung-init-observations.txt"
     python3 "$(dirname "$0")/check-filecrypto.py" "$out/serial.log" | tee "$out/filecrypto-acceptance.txt"
+    grep -Fq 'PASS_QEMU_FUSE_CONNECTIONS' "$out/serial.log"
+    if grep -Fq 'No such file or directory [/sys/fs/fuse/connections]' "$out/serial.log"; then
+        echo 'FAIL: vold still aborts while enumerating FUSE connections' >&2
+        exit 1
+    fi
+    echo 'PASS: FUSE connections directory present; missing-directory abort absent' > "$out/fuse-acceptance.txt"
 else
     python3 "$(dirname "$0")/boot-report.py" "$out"
 fi
