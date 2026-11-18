@@ -1,6 +1,7 @@
 #include <android/hidl/manager/1.0/BpHwServiceManager.h>
 #include <android/hardware/graphics/allocator/2.0/IAllocator.h>
 #include <android/hardware/graphics/mapper/2.0/IMapper.h>
+#include <android/hardware/graphics/mapper/2.1/IMapper.h>
 #include <hidl/HidlTransportSupport.h>
 #include <hwbinder/IPCThreadState.h>
 #include <hwbinder/ProcessState.h>
@@ -26,6 +27,7 @@ using android::hidl::manager::V1_0::IServiceManager;
 using android::hidl::manager::V1_0::BpHwServiceManager;
 using android::hardware::graphics::allocator::V2_0::IAllocator;
 using android::hardware::graphics::mapper::V2_0::IMapper;
+using Mapper21=android::hardware::graphics::mapper::V2_1::IMapper;
 using android::hardware::graphics::mapper::V2_0::Error;
 using android::hardware::graphics::common::V1_0::PixelFormat;
 extern "C" int is_selinux_enabled(void);
@@ -40,7 +42,7 @@ template<class T> static sp<T> load(const char* filename,const char* symbol){
  if(!fetch){printf("FAIL GRAPHICS dlsym %s\n",symbol);return nullptr;}
  return fetch("default"); // Keep the DSO resident for object/vtable lifetime.
 }
-static sp<IMapper> mapper(){return load<IMapper>("/vendor/lib64/hw/android.hardware.graphics.mapper@2.0-impl.so","HIDL_FETCH_IMapper");}
+static sp<IMapper> mapper(){return load<Mapper21>("/vendor/lib64/hw/android.hardware.graphics.mapper@2.0-impl-2.1.so","HIDL_FETCH_IMapper");}
 // Only diagnostics are added; allocation and ownership remain in actual r48 adapter.
 class LoggedAllocator final:public IAllocator {
  sp<IAllocator> real_;
@@ -117,15 +119,24 @@ static int client(pid_t expectedServer,pid_t expectedManager){
  auto found=manager->get(IAllocator::descriptor,instance);if(!found.isOk())return fail("allocator lookup");sp<android::hidl::base::V1_0::IBase> base=found;auto cast=IAllocator::castFrom(base,true);if(!cast.isOk())return fail("allocator cast");sp<IAllocator> allocator=cast;if(!allocator||!allocator->isRemote())return fail("allocator remote");
  int32_t actual=-1;auto debug=allocator->getDebugInfo([&](const DebugInfo& d){actual=d.pid;});if(!debug.isOk()||actual!=expectedServer||getpid()==actual||actual==expectedManager)return fail("process identities");
  printf("GRAPHICS CLIENT pid=%d server=%d manager=%d remote_allocator=1 local_mapper=1\n",getpid(),actual,expectedManager);
+ auto cast21=Mapper21::castFrom(m,true);if(!cast21.isOk())return fail("mapper 2.1 cast");sp<Mapper21> m21=cast21;if(!m21||m21->isRemote())return fail("mapper 2.1 locality");
+ puts("PASS GRAPHICS real mapper 2.1 interface");
  const unsigned widths[]={16,63,65};const unsigned heights[]={16,3,7};
  for(unsigned i=0;i<3;i++){
   IMapper::BufferDescriptorInfo info{};info.width=widths[i];info.height=heights[i];info.layerCount=1;info.format=PixelFormat::RGBA_8888;info.usage=GRALLOC_USAGE_SW_READ_OFTEN|GRALLOC_USAGE_SW_WRITE_OFTEN|GRALLOC_USAGE_HW_COMPOSER;
-  hidl_vec<uint32_t> descriptor;Error e=Error::NO_RESOURCES;auto described=m->createDescriptor(info,[&](Error x,const auto& d){e=x;descriptor=d;});if(!described.isOk()||e!=Error::NONE)return fail("descriptor");
+  Mapper21::BufferDescriptorInfo info21{};info21.width=info.width;info21.height=info.height;info21.layerCount=1;info21.format=android::hardware::graphics::common::V1_1::PixelFormat::RGBA_8888;info21.usage=info.usage;
+  hidl_vec<uint32_t> descriptor;Error e=Error::NO_RESOURCES;auto described=m21->createDescriptor_2_1(info21,[&](Error x,const auto& d){e=x;descriptor=d;});if(!described.isOk()||e!=Error::NONE)return fail("descriptor");
   void* buffer=nullptr;uint32_t stride=0;Error imported=Error::NO_RESOURCES;
   auto allocated=allocator->allocate(descriptor,1,[&](Error x,uint32_t s,const auto& handles){
    e=x;stride=s;if(x==Error::NONE&&handles.size()==1){auto r=m->importBuffer(handles[0],[&](Error z,void* p){imported=z;buffer=p;});if(!r.isOk())imported=Error::NO_RESOURCES;}
   });
   if(!allocated.isOk()||e!=Error::NONE||imported!=Error::NONE||!buffer)return fail("remote allocate and import");
+  auto validated=m21->validateBufferSize(buffer,info21,stride);if(!validated.isOk()||Error(validated)!=Error::NONE)return fail("mapper 2.1 validate API");
+  uint32_t fds=0,ints=0;Error transportError=Error::NO_RESOURCES;
+  auto sized=m21->getTransportSize(buffer,[&](Error error,uint32_t nf,uint32_t ni){transportError=error;fds=nf;ints=ni;});
+  auto handle=static_cast<native_handle_t*>(buffer);
+  if(!sized.isOk()||transportError!=Error::NONE||fds!=1||ints!=35||fds!=uint32_t(handle->numFds)||ints!=uint32_t(handle->numInts))return fail("mapper 2.1 transport size");
+  printf("PASS GRAPHICS mapper21 transport fds=%u ints=%u case=%u\n",fds,ints,i);
   if(!pixels(m,buffer,info.width,info.height,stride,false,true)||!pixels(m,buffer,info.width,info.height,stride,false,false))return fail("client pixels");
   if(i==2 && (!crossProcess(buffer,info.width,info.height,stride)||!pixels(m,buffer,info.width,info.height,stride,true,false)))return fail("cross-process visibility");
   auto freed=m->freeBuffer(buffer);if(!freed.isOk()||Error(freed)!=Error::NONE)return fail("free buffer");

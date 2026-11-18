@@ -58,7 +58,7 @@ echo 'PASS composer components compiled; runtime and vendor-image integration NO
 "$cc" "${flags[@]}" "$interfaces/graphics/allocator/2.0/default/service.cpp" "${links[@]}" -lhidlbase -l:android.hardware.graphics.allocator@2.0.so -Wl,--dynamic-linker=/system/bin/linker64 -o "$out/guest/system/bin/graphics-allocator-service"
 pkg="$out/composer-package/vendor"
 mkdir -p "$pkg/lib64/hw" "$pkg/bin/hw" "$pkg/etc/init"
-cp "$out/guest/vendor/lib64/hw/"{gralloc.minigbm.so,hwcomposer.drm_minigbm.so,android.hardware.graphics.allocator@2.0-impl.so,android.hardware.graphics.mapper@2.0-impl.so} "$pkg/lib64/hw/"
+cp "$out/guest/vendor/lib64/hw/"{gralloc.minigbm.so,hwcomposer.drm_minigbm.so,android.hardware.graphics.allocator@2.0-impl.so,android.hardware.graphics.mapper@2.0-impl-2.1.so} "$pkg/lib64/hw/"
 cp "$lib/"{libdrm.so,libsync.so} "$pkg/lib64/"
 cp "$out/guest/system/bin/graphics-allocator-service" "$pkg/bin/hw/android.hardware.graphics.allocator@2.0-service"
 cp "$out/guest/system/bin/graphics-composer-service" "$pkg/bin/hw/android.hardware.graphics.composer@2.1-service"

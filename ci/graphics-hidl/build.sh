@@ -12,7 +12,7 @@ git init "$interfaces"
 git -C "$interfaces" remote add origin https://android.googlesource.com/platform/hardware/interfaces
 timeout 180 git -C "$interfaces" fetch --depth=1 --filter=blob:none origin e7cb492bb835010b3d35496676200250b3b4697e
 git -C "$interfaces" sparse-checkout init --cone
-git -C "$interfaces" sparse-checkout set graphics/allocator/2.0 graphics/mapper/2.0
+git -C "$interfaces" sparse-checkout set graphics/allocator/2.0 graphics/mapper/2.0 graphics/mapper/2.1
  timeout 180 git -C "$interfaces" checkout --detach FETCH_HEAD
 # Keep one coherent SDK core runtime; add only missing minigbm dependencies,
 # explicitly retaining the libdrm/libsync just built for this module.
@@ -27,7 +27,7 @@ for p in src.rglob('*'):
 PY
 # These are real generated ABI libraries from the pinned published VNDK30
 # snapshot, not locally substituted interface implementations.
-for name in android.hardware.graphics.allocator@2.0.so android.hardware.graphics.mapper@2.0.so android.hardware.graphics.common@1.0.so; do
+for name in android.hardware.graphics.allocator@2.0.so android.hardware.graphics.mapper@2.0.so android.hardware.graphics.mapper@2.1.so android.hardware.graphics.common@1.0.so android.hardware.graphics.common@1.1.so; do
  if [[ ! -s "$out/guest/system/lib64/$name" ]]; then
   found=0
   for kind in vndk-sp vndk-core; do
@@ -43,10 +43,12 @@ while IFS= read -r p; do incs+=(-isystem "$p"); done < <(find "$vndk/arm64/inclu
 while IFS= read -r p; do incs+=(-isystem "$p"); done < <(find "$interfaces/graphics" -type d -name include | sort)
 cc="$ANDROID_HOME/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
 flags=(-std=c++17 -nostdinc++ -isystem "$vndk/arm64/include/external/libcxx/include" -fno-rtti -Wall -Wextra -Werror -O2 "${incs[@]}")
-links=(-nostdlib++ -fuse-ld=lld -L"$out/guest/system/lib64" -Wl,-rpath-link,"$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux -lhardware -lbase -lsync -l:android.hardware.graphics.allocator@2.0.so -l:android.hardware.graphics.mapper@2.0.so -l:android.hardware.graphics.common@1.0.so)
+links=(-nostdlib++ -fuse-ld=lld -L"$out/guest/system/lib64" -Wl,-rpath-link,"$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux -lhardware -lbase -lsync -l:android.hardware.graphics.allocator@2.0.so -l:android.hardware.graphics.mapper@2.0.so -l:android.hardware.graphics.mapper@2.1.so -l:android.hardware.graphics.common@1.0.so -l:android.hardware.graphics.common@1.1.so)
 for api in allocator mapper; do
  "$cc" "${flags[@]}" -fPIC -shared -DLOG_TAG=\"GraphicsFixture\" "$interfaces/graphics/$api/2.0/default/passthrough.cpp" "${links[@]}" -Wl,--no-undefined -o "$out/guest/vendor/lib64/hw/android.hardware.graphics.$api@2.0-impl.so"
 done
+"$cc" "${flags[@]}" -fPIC -shared -DLOG_TAG=\"GraphicsFixture\" "$interfaces/graphics/mapper/2.1/default/passthrough.cpp" "${links[@]}" -Wl,--no-undefined -o "$out/guest/vendor/lib64/hw/android.hardware.graphics.mapper@2.0-impl-2.1.so"
+python3 ci/graphics-hidl/check-matrix.py "$out/system.ext4.img" "$out"
 "$cc" "${flags[@]}" ci/graphics-hidl/fixture.cpp "${links[@]}" -Wl,--dynamic-linker=/system/bin/linker64 -o "$out/guest/system/bin/graphics-fixture"
 # Require every direct dependency to be present before boot.
 python3 - "$out/guest" <<'PY'

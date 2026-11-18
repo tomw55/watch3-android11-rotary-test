@@ -57,6 +57,7 @@ jobs:
           name: android11-graphics-${{ github.run_id }}
           path: |
             servicemanager-binary/*.txt
+            servicemanager-binary/*.xml
             servicemanager-binary/*.sha256
             servicemanager-binary/*.log
             servicemanager-binary/*SHA256SUMS
