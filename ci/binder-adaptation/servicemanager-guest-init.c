@@ -83,6 +83,19 @@ int main(void) {
       if(n>0) { buf[n]=0; printf("DIAG SELinux enforcing=%s",buf); if(buf[n-1]!='\n')puts(""); }
     } else perror("DIAG open selinux enforce");
   }
+  // SELinux's enforcing flag alone does not mean a policy is loaded.
+  // Android servicemanager uses userspace SELinux access checks, which fail
+  // without an initialized policy. Diagnose this explicitly in the guest.
+  {
+    int policy=open("/sys/fs/selinux/policy",O_RDONLY);
+    if(policy>=0) {
+      char byte;
+      ssize_t n=read(policy,&byte,1);
+      close(policy);
+      if(n==1) logmsg("DIAG SELinux binary policy is loaded\n");
+      else logmsg("DIAG SELinux binary policy is NOT loaded\n");
+    } else perror("DIAG open SELinux binary policy");
+  }
   if(access("/sys/fs/selinux/policy",R_OK)==0)
     logmsg("PASS SELinux policy interface available\n");
   else logmsg("WARN SELinux policy interface unavailable\n");
