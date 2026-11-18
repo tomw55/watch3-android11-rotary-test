@@ -46,7 +46,7 @@ static int mock_ioctl(int fd, unsigned long request, ...)
     case UI_SET_EVBIT: case UI_SET_RELBIT: case UI_SET_KEYBIT:
         values[calls] = va_arg(args, int); break;
     case UI_SET_PHYS:
-        snprintf(physical, sizeof(physical), "%s", va_arg(args, const char *)); break;
+        snprintf(physical, sizeof(physical), "%s", va_arg(args, char *)); break;
     case UI_DEV_SETUP: actual = *va_arg(args, struct uinput_setup *); break;
     case UI_DEV_CREATE: case UI_DEV_DESTROY: break;
     default: assert(!"Unexpected ioctl");
