@@ -111,14 +111,6 @@ pattern = r'(static void __map_bio\s*\([^)]*\)\s*\{)'
 matches = list(re.finditer(pattern, s))
 if len(matches) != 1:
     raise SystemExit("Expected exactly one Samsung dm.c __map_bio definition; found %d" % len(matches))
-probe = r'''
-    pr_warn("dm-core __map_bio: target=%s op=%u sector=%llu bytes=%u\\n",
-            tio->ti->type->name, bio_op(tio->clone),
-            (unsigned long long)tio->clone->bi_iter.bi_sector,
-            tio->clone->bi_iter.bi_size);
-'''
-# tio fields vary across DM versions: use only a constant trace to avoid
-# relying on a particular Samsung struct layout.
 probe = '    pr_warn("dm-core __map_bio entered\\n");\n'
 m = matches[0]
 s = s[:m.end()] + '\n' + probe + s[m.end():]
