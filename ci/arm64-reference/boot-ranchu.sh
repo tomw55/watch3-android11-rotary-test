@@ -183,7 +183,7 @@ if [[ -n ${SAMSUNG_INIT_KERNEL:-} && -z ${GRAPHICS_PACKAGE_DIR:-} ]]; then
             ((i+=1))
             continue
         fi
-        filtered+=("${args[i]///}")
+        filtered+=("${args[i]}")
     done
     args=("${filtered[@]}")
 fi

@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 HALS={
  'android.hardware.graphics.allocator':('2.0','IAllocator','hwbinder'),
- 'android.hardware.graphics.mapper':('2.0','IMapper','passthrough'),
+ 'android.hardware.graphics.mapper':('2.1','IMapper','passthrough'),
  'android.hardware.graphics.composer':('2.1','IComposer','hwbinder'),
 }
 
