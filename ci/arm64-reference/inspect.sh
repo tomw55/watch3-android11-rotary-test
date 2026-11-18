@@ -84,6 +84,9 @@ PYGPT
         done > "$out/vendor-graphics-init.txt" 2>&1
     fi
     if [[ $part == system ]]; then
+        if [[ -n ${GRAPHICS_PACKAGE_DIR:-} ]]; then
+            python3 "$script_dir/../graphics-hidl/check-matrix.py" "$raw" "$out" | tee "$out/graphics-matrix-acceptance.txt"
+        fi
         for init in /bin/init /system/bin/init; do
             debugfs -R "dump $init $work/init" "$raw" >> "$out/init-inspection.txt" 2>&1
             if [[ -s "$work/init" ]]; then break; fi

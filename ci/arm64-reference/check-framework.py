@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """A green diagnostic is not a full boot: require real framework evidence."""
 import pathlib,re,sys
-s=pathlib.Path(sys.argv[1]).read_text(errors='replace')
+path=pathlib.Path(sys.argv[1])
+if not path.is_file():
+ print('NOT RUN framework checks: serial capture absent; inspect the earlier preparation step')
+ raise SystemExit(1)
+s=path.read_text(errors='replace')
 checks={
  'samsung_kernel':bool(re.search(r'Linux version 4\.9\.59\b',s)),
  'second_stage_init':'init second stage started' in s,

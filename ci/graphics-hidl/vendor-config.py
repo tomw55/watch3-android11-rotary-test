@@ -26,7 +26,21 @@ def manifest(text):
  return ET.tostring(root,encoding='unicode')+'\n'
 
 def ranchu_rc(text):
- pattern=r'(?m)^(\s*)setprop\s+ro\.hardware\.egl\s+emulation\s*$'
- if len(re.findall(pattern,text))!=1:raise ValueError('expected one original early EGL selection')
  if re.search(r'(?m)^\s*setprop\s+ro\.hardware\.(gralloc|hwcomposer)\s',text):raise ValueError('existing graphics selection needs explicit review')
- return re.sub(pattern,lambda m:m[1]+'setprop ro.hardware.egl swiftshader\n'+m[1]+'setprop ro.hardware.gralloc minigbm\n'+m[1]+'setprop ro.hardware.hwcomposer drm_minigbm',text)
+ lines=text.splitlines(keepends=True);action=None;found=[]
+ for index,line in enumerate(lines):
+  if line and not line[0].isspace() and not line.startswith('#'):action=line.strip()
+  m=re.fullmatch(r'([ \t]*)setprop\s+ro\.hardware\.egl\s+emulation[ \t]*\n?',line)
+  if m:found.append((index,action,m[1]))
+ if [a for _,a,_ in found].count('on early-init')!=1:raise ValueError('expected one early-init EGL selection')
+ if any(a not in ('on early-init','on boot') for _,a,_ in found) or [a for _,a,_ in found].count('on boot')>1:raise ValueError('unexpected EGL selection action')
+ for index,action,indent in found:
+  lines[index]=indent+'setprop ro.hardware.egl swiftshader\n'
+  if action=='on early-init':lines[index]+=indent+'setprop ro.hardware.gralloc minigbm\n'+indent+'setprop ro.hardware.hwcomposer drm_minigbm\n'
+ return ''.join(lines)
+
+def selinux_label(data):
+ if data.endswith(b'\0'):data=data[:-1]
+ value=data.decode('ascii')
+ if not re.fullmatch(r'u:object_r:[A-Za-z0-9_]+:s0',value):raise ValueError('invalid source file label')
+ return value

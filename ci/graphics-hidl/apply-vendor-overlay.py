@@ -6,7 +6,9 @@ if not image.is_file() or image.name!='vendor-diagnostic.ext4':raise SystemExit(
 spec=importlib.util.spec_from_file_location('config',pathlib.Path(__file__).with_name('vendor-config.py'));config=importlib.util.module_from_spec(spec);spec.loader.exec_module(config)
 log=[]
 def debug(command):
- p=subprocess.run(['debugfs','-w','-R',command,str(image)],capture_output=True,text=True);log.append(command+'\n'+p.stdout+p.stderr);return p.stdout+p.stderr
+ p=subprocess.run(['debugfs','-w','-R',command,str(image)],capture_output=True,text=True);log.append(command+'\n'+p.stdout+p.stderr)
+ (out/'vendor-overlay.log').write_text('\n'.join(log))
+ return p.stdout+p.stderr
 with tempfile.TemporaryDirectory(dir=out) as tmp:
  root=pathlib.Path(tmp)
  def dump(path,label):
@@ -14,10 +16,13 @@ with tempfile.TemporaryDirectory(dir=out) as tmp:
   if not p.is_file() or p.stat().st_size==0:raise RuntimeError('Missing existing image file '+path)
   return p.read_bytes()
  def context(path):
-  s=debug('ea_list '+path)
-  matches=re.findall(r'u:object_r:[A-Za-z0-9_]+:s0',s)
-  if len(set(matches))!=1:raise RuntimeError('Cannot derive existing SELinux label: '+path)
-  return matches[0]
+  # e2fsprogs 1.46.5 ea_list suppresses values >=40 bytes. Most HAL
+  # executable labels exceed this. Read the actual xattr, not pretty output.
+  debug('ea_list '+path)
+  value=root/('label-'+hashlib.sha256(path.encode()).hexdigest()[:16])
+  debug(f'ea_get -f {value} {path} security.selinux')
+  if not value.is_file() or not value.stat().st_size:raise RuntimeError('Cannot read existing SELinux label: '+path)
+  return config.selinux_label(value.read_bytes())
  # Derive domain entrypoint/file labels from the actual old package, not guesses.
  labels={
   'allocator':context('/bin/hw/android.hardware.graphics.allocator@3.0-service'),
