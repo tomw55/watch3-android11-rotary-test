@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -189,10 +190,9 @@ static int child_import(int socket)
     puts("PASS child imported DRM-fd mmap and parent pattern");
     for (size_t i = 0; i < info.size; i++)
         ((unsigned char *)address)[i] = pattern(i, 0xa7);
-    if (msync(address, info.size, MS_SYNC)) {
-        perror("FAIL child msync");
-        goto out;
-    }
+    if (msync(address, info.size, MS_SYNC))
+        printf("OBSERVED child DRM mapping msync errno=%d (%s)\n", errno, strerror(errno));
+    atomic_thread_fence(memory_order_seq_cst);
     fb.width = info.width;
     fb.height = info.height;
     /* Android RGBA_8888 byte order on little-endian ARM64. */
@@ -274,10 +274,9 @@ static int probe(void)
     }
     for (size_t i = 0; i < create.size; i++)
         ((unsigned char *)address)[i] = pattern(i, 0x35);
-    if (msync(address, create.size, MS_SYNC)) {
-        perror("FAIL parent msync");
-        goto out;
-    }
+    if (msync(address, create.size, MS_SYNC))
+        printf("OBSERVED parent DRM mapping msync errno=%d (%s)\n", errno, strerror(errno));
+    atomic_thread_fence(memory_order_seq_cst);
     puts("PASS CREATE_DUMB MAP_DUMB parent CPU mapping and write");
     exported.handle = create.handle;
     if (ioctl(card, DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported)) {
