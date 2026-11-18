@@ -11,6 +11,7 @@ on:
       - 'ci/binder-adaptation/register-test-service-ndk.c'
       - 'ci/binder-adaptation/register-test-service-ndk.cpp'
       - 'ci/samsung-virt/run.sh'
+      - 'tools/test-servicemanager-policy-loader.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,6 +31,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+      - name: Strict host policy-loader regression tests
+        run: python3 tools/test-servicemanager-policy-loader.py servicemanager-binary/loader-tests
       - name: Extract genuine Android 11 ARM64 servicemanager and recursive libraries
         run: bash ci/binder-adaptation/acquire-servicemanager.sh
       - name: Launch real servicemanager against patched Samsung Binder kernel
@@ -45,6 +48,7 @@ jobs:
         with:
           name: android11-real-servicemanager-qemu-${{ github.run_id }}
           path: |
+            servicemanager-binary/loader-tests/
             servicemanager-binary/*.txt
             servicemanager-binary/*.log
             samsung-virt-evidence/
