@@ -72,6 +72,5 @@
       "EV_SYN SYN_REPORT 0"
     ],
     "physical_notches_per_cycle": "UNKNOWN"
-  },
-  "new_android_guest_identity_test": "NOT RUN"
+  }
 }

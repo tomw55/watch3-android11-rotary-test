@@ -1,0 +1,3 @@
+[      64.762026] EV_REL       REL_WHEEL            ffffffff            
+[      64.762026] EV_REL       REL_X                00000006            
+[      64.762026] EV_SYN       SYN_REPORT           00000000            

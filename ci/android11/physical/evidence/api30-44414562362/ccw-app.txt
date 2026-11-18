@@ -1,0 +1,4 @@
+11-18 22:47:38.763  2417  2417 I Watch3Rotary: ROTARY_CASE_ccw_45914d11b468494981d5cbe4165d50dd
+11-18 22:47:39.349  2366  2366 I Watch3Rotary: view=fixture mapperClass=ROTARY action=ACTION_SCROLL isScroll=true isHover=false viewFocus=true windowFocus=true deviceId=16 device=tizen_detent eventTime=64762 source=0x400000 AXIS_SCROLL=-1.0 AXIS_VSCROLL=0.0 AXIS_HSCROLL=0.0 rotation=0
+11-18 22:47:39.349  2366  2366 I Watch3Rotary: view=decoy mapperClass=CURSOR action=ACTION_HOVER_MOVE isScroll=false isHover=true viewFocus=false windowFocus=true deviceId=16 device=tizen_detent eventTime=64762 source=0x2002 AXIS_SCROLL=0.0 AXIS_VSCROLL=0.0 AXIS_HSCROLL=0.0 rotation=0
+11-18 22:47:39.350  2366  2366 I Watch3Rotary: view=decoy mapperClass=CURSOR action=ACTION_SCROLL isScroll=true isHover=false viewFocus=false windowFocus=true deviceId=16 device=tizen_detent eventTime=64762 source=0x2002 AXIS_SCROLL=0.0 AXIS_VSCROLL=-1.0 AXIS_HSCROLL=0.0 rotation=0

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "host_ci": {
+    "status": "PASS",
+    "run": 44411941792,
+    "commit": "692a4daa4b13011edcfda6e02c0cd5e44af44e09",
+    "strict_c11": true,
+    "asan_ubsan": true,
+    "asan_options": "detect_leaks=1:halt_on_error=1",
+    "mutants_detected": 14,
+    "artifact_id": 14477751348,
+    "artifact_zip_sha256": "40f45e6190d9089dfb72ccf464ac372d14364945bab2981825155ad6a025f2d3",
+    "internal_manifest_entries_verified": 48
+  },
+  "samsung_source_local": {
+    "status": "PASS",
+    "archive_sha256": "1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f",
+    "direction_cases": 121,
+    "work_state_cases": 128,
+    "strict_c11": true,
+    "asan_ubsan": true,
+    "leak_sanitizer": "NOT RUN locally: ptrace environment",
+    "ci_source_extraction": "NOT RUN: source archive intentionally not uploaded"
+  },
+  "android_guest": {
+    "status": "PASS",
+    "run": 44414562362,
+    "commit": "ccfab2d34b00cf45d3c6530b705955a42406a3d1",
+    "image": "system-images;android-30;default;x86_64",
+    "image_revision": 11,
+    "kernel": "Stock Android SDK x86_64 emulator kernel, NOT Samsung Linux 4.9.59",
+    "kernel_release": "NOT CAPTURED by the existing guest script",
+    "fingerprint": "Android/sdk_phone_x86_64/generic_x86_64:11/RSR1.210722.013.A2/10067904:userdebug/test-keys",
+    "api": 30,
+    "boot_completed": 1,
+    "selinux": "Enforcing",
+    "generator_identity": [
+      "0006",
+      "0001",
+      "0001",
+      "0100"
+    ],
+    "evdev_path_observed_this_run": "/dev/input/event13",
+    "android_device_id_observed_this_run": 16,
+    "dynamic_ids_required": true,
+    "idc": "/data/system/devices/idc/tizen_detent.idc",
+    "idc_sha256": "ae2f9cdd2750a277fea33b2f82185b0bbe7113ad5efa44cb1fde272e8e99cf95",
+    "cw_axis_scroll": 1.0,
+    "ccw_axis_scroll": -1.0,
+    "source": "0x00400000",
+    "focused_view": true,
+    "rel_x_only_rotary_events": 0,
+    "cursor_scroll_side_effect": true,
+    "is_external": false,
+    "orientation_tested": 0,
+    "orientation_180": "NOT RUN",
+    "repeated_hall_cycles": "PASS host only; NOT RUN in guest",
+    "artifact_id": 14479476962,
+    "artifact_zip_sha256": "88782a66ee1e390e64b07120283eb9d82563472fc6f6130b93386e2de9d2d342"
+  },
+  "physical_watch": {
+    "new_interaction": "NONE",
+    "raw_evdev": "NOT RUN",
+    "android_boot": "NOT RUN",
+    "android_display_wake": "NOT RUN",
+    "bringup": "NO-GO"
+  }
+}

@@ -69,7 +69,7 @@ Primary sources, all under `android-11.0.0_r48` in
 | [reader/EventHub.cpp:1331–1343](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/services/inputflinger/reader/EventHub.cpp#1331) | BTN_MOUSE (=BTN_LEFT) plus REL_X/Y adds cursor class. IDC rotaryEncoder **adds** rotary class; it does not remove cursor |
 | [reader/InputDevice.cpp:150–152,181–183](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/services/inputflinger/reader/InputDevice.cpp#150) | Both rotary and cursor mappers can be created |
 | [reader/mapper/RotaryEncoderInputMapper.cpp:36–51,84–131](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/services/inputflinger/reader/mapper/RotaryEncoderInputMapper.cpp#36) | Existing `device.scalingFactor=1.0` is supported; wheel sync produces SOURCE_ROTARY_ENCODER ACTION_SCROLL/AXIS_SCROLL. At orientation 180 the sign reverses |
-| [reader/EventHub.cpp:1615–1628](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/services/inputflinger/reader/EventHub.cpp#1615) | IDC selected through the device identifier, not event number. Updated IDs may change which ID-specific file takes precedence; guest tests require the exact staged IDC |
+| [libs/input/InputDevice.cpp:54–81](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/libs/input/InputDevice.cpp#54) and reader/EventHub.cpp:1615–1628 | IDC priority is vendor/product/version, vendor/product, then name. Updated identity can expose an ID-specific file before `tizen_detent.idc`; guest tests require the exact staged IDC |
 | [reader/EventHub.cpp:1648–1655](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-11.0.0_r48/services/inputflinger/reader/EventHub.cpp#1648) and mapper:107–110 | BUS_VIRTUAL is not external by default; rotary mapper adds POLICY_FLAG_WAKE only for external devices that scroll. Current IDC has no external override |
 
 Reviewed file SHA-256s: EventHub
@@ -80,6 +80,8 @@ RotaryEncoderInputMapper
 
 The IDC remains byte-identical (SHA-256
 `ae2f9cdd2750a277fea33b2f82185b0bbe7113ad5efa44cb1fde272e8e99cf95`).
+The additional reviewed libs/input/InputDevice.cpp hash is
+`3c4db75650819d981b0a62aa7837c1387039a5be12a5312d76d1e2d61b31a4ae`.
 No resolution/notches-per-revolution or wake property is invented.
 Future guest tests discover by exact name, validate capabilities and four
 sysfs ID fields, require the selected IDC, and obtain the current evdev node
@@ -125,19 +127,49 @@ The source harness excludes optional Knox GearPay/SMC and sleep-monitor branches
 it does not validate the kernel input core, IRQ timing or any probe/power path.
 
 Local LeakSanitizer was disabled because this environment uses ptrace;
-ASan/UBSan ran. CI retains leak detection. No revised Android guest runtime,
-physical evdev stream, screen wake or hardware driver was exercised.
+ASan/UBSan ran. CI retains leak detection. At the host-only stage no Android guest was exercised. The subsequent guest
+result below is separate; no physical evdev stream, display-wake test or
+hardware driver was exercised.
 
-CI status will be linked after execution. Logs and SHA-256 manifests are
-produced in the chosen output directory and uploaded by the host workflow.
+Verified host CI: [44411941792](https://github.com/tomw55/watch3-android11-rotary-test/actions/runs/44411941792),
+code commit `692a4daa4b13011edcfda6e02c0cd5e44af44e09`. Downloaded ZIP SHA-256:
+`40f45e6190d9089dfb72ccf464ac372d14364945bab2981825155ad6a025f2d3`;
+all 48 internal manifest entries independently verified. CI leak detection was enabled.
+
+The revised identity subsequently passed real API30 guest delivery in
+[44414562362](https://github.com/tomw55/watch3-android11-rotary-test/actions/runs/44414562362),
+commit `ccfab2d34b00cf45d3c6530b705955a42406a3d1`. This used **stock Android SDK
+API30 x86_64 revision 11**, not Samsung Linux 4.9.59. The guest script did not
+capture the kernel release string. SELinux was enforcing; boot_completed=1.
+Both probe and generator IDs were 0006/0001/0001/0100. The selected IDC bytes
+matched the existing hash. Dynamic discovery found event13 and Android ID 16.
+
+| Guest case | Raw frame | Focused rotary result | Other observed effects |
+|---|---|---|---|
+| CW | WHEEL +1, X5, SYN | ACTION_SCROLL, source 0x400000, AXIS_SCROLL +1.0 | Decoy mouse scroll +1 and hover |
+| CCW | WHEEL -1, X6, SYN | Same deviceId/source/focus, AXIS_SCROLL -1.0 | Decoy mouse scroll -1 and hover |
+| X-only | X5, SYN | No rotary scroll | Decoy pointer hover |
+
+This confirms a runtime cursor side effect, not just a static possibility.
+The device was internal (`IsExternal: false`). Display wake, orientation 180,
+repeated guest detents and physical evdev remain NOT RUN. Host repeated-cycle
+and reverse tests do not establish those Android runtime results.
+
+The artifact's input-feasibility.txt is a **preflight snapshot written before**
+the delivery test; its NOT RUN line is superseded by rotary-result.txt and
+job-result.txt. The individual raw/app logs independently substantiate PASS.
+Key unchanged evidence is retained under `evidence/api30-44414562362/`.
+Original ZIP SHA-256:
+`88782a66ee1e390e64b07120283eb9d82563472fc6f6130b93386e2de9d2d342`.
+Machine-readable results are in validation-results.json. No physical-watch
+logs or identifiers were added to these synthetic guest evidence files.
 
 ## Next gates
 
-1. Re-run the existing API30 rotary-delivery workflow on this branch; verify
-   all four updated identity fields, exact IDC, dynamic IDs, both directions,
-   repeated events, orientation 180 and cursor side effects. Existing default
-   guest test covers the first CW/CCW pair and REL_X-only control; repeated and
-   orientation cases still need runtime extension/execution.
+1. Extend the now-passing API30 guest test with repeated source-defined Hall
+   cycles and orientation 180. Preserve the passing identity/IDC/direction
+   and REL_X-only controls; keep cursor effects visible rather than excluding
+   them from the fixture.
 2. Choose and review a production solution for cursor/Hall-data isolation and
    bezel display wake. Preserve the capability-parity fixture as a control.
 3. Only after separate developer-boot authorization, recovery and driver-safety

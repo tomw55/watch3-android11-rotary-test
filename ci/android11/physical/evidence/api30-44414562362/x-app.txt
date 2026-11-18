@@ -1,0 +1,2 @@
+11-18 22:47:40.039  2430  2430 I Watch3Rotary: ROTARY_CASE_x_9645f667201240a78e5771f71e55c2c8
+11-18 22:47:40.633  2366  2366 I Watch3Rotary: view=decoy mapperClass=CURSOR action=ACTION_HOVER_MOVE isScroll=false isHover=true viewFocus=false windowFocus=true deviceId=16 device=tizen_detent eventTime=66036 source=0x2002 AXIS_SCROLL=0.0 AXIS_VSCROLL=0.0 AXIS_HSCROLL=0.0 rotation=0

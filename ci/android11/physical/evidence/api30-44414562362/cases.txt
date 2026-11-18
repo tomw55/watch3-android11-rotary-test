@@ -1,0 +1,3 @@
+PASS cw: raw=[('REL_WHEEL', 1), ('REL_X', 5), ('SYN_REPORT', 0)], deviceId=16, rotary=[('fixture', 'true', 'true', 0, 1.0)], app_cursor_scroll=1, app_other_cursor=2
+PASS ccw: raw=[('REL_WHEEL', -1), ('REL_X', 6), ('SYN_REPORT', 0)], deviceId=16, rotary=[('fixture', 'true', 'true', 0, -1.0)], app_cursor_scroll=1, app_other_cursor=1
+PASS x: raw=[('REL_X', 5), ('SYN_REPORT', 0)], deviceId=16, rotary=[], app_cursor_scroll=0, app_other_cursor=1
