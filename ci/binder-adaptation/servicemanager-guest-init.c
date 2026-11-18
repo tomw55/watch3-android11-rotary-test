@@ -55,18 +55,18 @@ int main(void) {
         char name[256],label[512];
         if(sscanf(line," %255s %511s",name,label)==2 &&
            strcmp(name,"watch3.test.echo")==0) {
-          printf("DIAG service_contexts watch3.test.echo label=%s\\n",label);
+          printf("DIAG service_contexts watch3.test.echo label=%s\n",label);
           matched=1;
         }
       }
       fclose(contexts);
-      if(!matched) logmsg("DIAG service_contexts has NO watch3.test.echo entry\\n");
+      if(!matched) logmsg("DIAG service_contexts has NO watch3.test.echo entry\n");
     }
   }
   {
     char buf[128]; int f=open("/sys/fs/selinux/enforce",O_RDONLY);
     if(f>=0) { ssize_t n=read(f,buf,sizeof(buf)-1); close(f);
-      if(n>0) { buf[n]=0; printf("DIAG SELinux enforcing=%s",buf); if(buf[n-1]!='\\n')puts(""); }
+      if(n>0) { buf[n]=0; printf("DIAG SELinux enforcing=%s",buf); if(buf[n-1]!='\n')puts(""); }
     } else perror("DIAG open selinux enforce");
   }
   if(access("/sys/fs/selinux/policy",R_OK)==0)
@@ -187,7 +187,7 @@ int main(void) {
     close(registrarpipe[1]);
     if(registrar<0) {
       perror("fork register-test-service");
-      logmsg("FAIL Android 11 test service registrar fork\\n");
+      logmsg("FAIL Android 11 test service registrar fork\n");
     } else {
       for(int i=0;i<20;i++) {
         char buf[2048];
@@ -215,8 +215,8 @@ int main(void) {
       }
       int regstatus=0;
       if(waitpid(registrar,&regstatus,WNOHANG)==registrar)
-        logmsg("FAIL Android 11 test service registrar exited\\n");
-      else logmsg("PASS Android 11 test service registrar running\\n");
+        logmsg("FAIL Android 11 test service registrar exited\n");
+      else logmsg("PASS Android 11 test service registrar running\n");
     }
   }
   // A separate genuine Android 11 process queries the service registry via Binder.
@@ -269,7 +269,7 @@ int main(void) {
           if(saw_test_service) logmsg("PASS Android 11 test service discovered in registry\n");
           else logmsg("FAIL Android 11 test service missing from registry\n");
         } else {
-          printf("FAIL Android 11 service list result=%ld status=%d registry=%d\\n",
+          printf("FAIL Android 11 service list result=%ld status=%d registry=%d\n",
                  (long)qresult,qstatus,saw_registry);
         }
       }
