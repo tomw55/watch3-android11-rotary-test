@@ -19,7 +19,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc libssl-dev xz-utils cpio qemu-system-arm gcc-aarch64-linux-gnu
+          sudo apt-get install -y bc libssl-dev xz-utils cpio qemu-system-arm gcc-aarch64-linux-gnu checkpolicy
       - name: Compile isolated Samsung DRM kernel
         shell: bash
         run: |
