@@ -24,3 +24,5 @@ done
 printf '%s\n' 'Supplementary API30 generated/platform headers: platform/prebuilts/vndk/v30 95168a4aced97deb4966ef6f10c8fd6dee9f1582' > "$out/hidl-source.txt"
 (cd "$out/guest" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$out/hidl-guest-SHA256SUMS"
 tar -C "$out/guest" -czf "$out/android11-servicemanager-guest.tar.gz" system
+
+sha256sum "$out/android11-servicemanager-guest.tar.gz" > "$out/guest-archive.sha256"

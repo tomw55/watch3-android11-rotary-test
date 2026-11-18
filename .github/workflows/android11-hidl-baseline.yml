@@ -5,6 +5,7 @@ on:
     paths:
       - ci/hidl-baseline/**
       - ci/samsung-virt/run.sh
+      - ci/samsung-virt/configure.sh
       - ci/binder-adaptation/acquire-servicemanager.sh
       - .github/workflows/android11-hidl-baseline.yml
 permissions:
@@ -46,6 +47,7 @@ jobs:
           name: android11-hidl-${{ github.run_id }}
           path: |
             servicemanager-binary/*.txt
+            servicemanager-binary/*.sha256
             servicemanager-binary/*.log
             servicemanager-binary/*SHA256SUMS
             samsung-virt-evidence/

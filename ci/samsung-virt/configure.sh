@@ -51,6 +51,11 @@ CONFIG_ANDROID_BINDER_IPC=y
 CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
 CONFIG_VIRTIO_MMIO=y
 CONFIG
+# The HIDL fixture uses Android's Unix-domain logging/property transports.
+# Keep the established native Binder reference configuration unchanged.
+if [[ ${HIDL_GUEST:-0} == 1 ]]; then
+    echo 'CONFIG_UNIX=y' >> "$fragment"
+fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     cat "$ANDROID_INIT_FRAGMENT" >> "$fragment"
 fi
@@ -62,6 +67,9 @@ for symbol in ARCH_VEXPRESS ARM_GIC ARM_PSCI_FW ARM_ARCH_TIMER VIRTIO_MMIO SERIA
 done
 grep -Fx 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' .config
 grep -Fx 'CONFIG_DEFAULT_SECURITY="selinux"' .config
+if [[ ${HIDL_GUEST:-0} == 1 ]]; then
+    grep -Fx 'CONFIG_UNIX=y' .config
+fi
 for symbol in ARCH_EXYNOS NOBLESSE SECURITY_SMACK SECURITY_SELINUX_DEVELOP; do
     if grep -Eq "^CONFIG_$symbol=[ym]$" .config; then
         echo "Unexpected CONFIG_$symbol" >&2
