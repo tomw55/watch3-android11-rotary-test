@@ -377,6 +377,13 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	sector_t rel_sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	struct dk_io *io;
 
+	/* QEMU-only diagnostic: prove entry into the target for each bio,
+	 * including reads, flushes, and writes that exit before map_write.
+	 */
+	pr_warn("dm-default-key map_entry: op=%u sector=%llu rel=%llu bytes=%u flags=0x%x\n",
+		bio_op(bio), (unsigned long long)bio->bi_iter.bi_sector,
+		(unsigned long long)rel_sector, bio->bi_iter.bi_size, bio->bi_opf);
+
 	/* Linux 4.9 empty flush bios may use REQ_OP_FLUSH rather than REQ_PREFLUSH. */
 	if (unlikely(bio_op(bio) == REQ_OP_FLUSH ||
 		     ((bio->bi_opf & REQ_PREFLUSH) && bio->bi_iter.bi_size == 0))) {
