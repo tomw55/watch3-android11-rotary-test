@@ -966,6 +966,11 @@ BINDER_TRACE
 fi
 bash "$repo/ci/samsung-virt/configure.sh" "$PWD" 2>&1 | tee "$out/configure.log"
 cp .config "$out/config.final"
+if [[ ${DRM_BUFFER_GATE:-0} == 1 ]]; then
+    mkdir -p "$out/drm-uapi/drm"
+    cp include/uapi/drm/{drm.h,drm_mode.h,drm_fourcc.h} "$out/drm-uapi/drm/"
+    (cd "$out/drm-uapi" && sha256sum drm/*.h > SHA256SUMS)
+fi
 if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
     grep -E '^(CONFIG_(DM_DEFAULT_KEY|BLK_DEV_DM|DM_CRYPT|BLK_INLINE_ENCRYPTION|BLK_INLINE_ENCRYPTION_FALLBACK|FS_ENCRYPTION|EXT4_ENCRYPTION)=|# CONFIG_(DM_DEFAULT_KEY|BLK_DEV_DM|DM_CRYPT|BLK_INLINE_ENCRYPTION|BLK_INLINE_ENCRYPTION_FALLBACK|FS_ENCRYPTION|EXT4_ENCRYPTION) is not set)' .config > "$out/dm-default-key-compiled-config.txt" || true
 fi

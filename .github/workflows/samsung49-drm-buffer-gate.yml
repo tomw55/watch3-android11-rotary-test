@@ -1,0 +1,40 @@
+name: Samsung 4.9 raw DRM buffer gate
+on:
+  push:
+    branches: [test/samsung49-drm-buffer-gate]
+    paths:
+      - ci/drm-buffer-gate/**
+      - ci/samsung-virt/**
+      - .github/workflows/samsung49-drm-buffer-gate.yml
+permissions:
+  contents: read
+jobs:
+  drm:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils cpio qemu-system-arm gcc-aarch64-linux-gnu
+      - name: Compile isolated Samsung DRM kernel
+        shell: bash
+        run: |
+          cat ci/samsung-virt/android-init.config ci/drm-buffer-gate/drm.config > "$RUNNER_TEMP/drm.config"
+          mkdir -p samsung-virt-evidence
+          DRM_BUFFER_GATE=1 ANDROID_INIT_FRAGMENT="$RUNNER_TEMP/drm.config"             bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+      - name: Execute disposable DRM buffer gate
+        shell: bash
+        run: |
+          bash ci/drm-buffer-gate/run.sh             "$GITHUB_WORKSPACE/samsung-virt-evidence/Image"             "$GITHUB_WORKSPACE/samsung-virt-evidence/drm-uapi"             "$GITHUB_WORKSPACE/drm-buffer-evidence"
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-drm-buffer-${{ github.run_id }}
+          path: |
+            samsung-virt-evidence/
+            drm-buffer-evidence/
