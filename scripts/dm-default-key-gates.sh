@@ -27,6 +27,33 @@ dmsetup status dk_test
 dmsetup deps dk_test
 losetup -a
 echo "Gate 2 loop device: $loop"
+# Verify that userspace is opening the kernel's real DM block device.
+# A stale or regular /dev/mapper path can make buffered dd appear successful
+# without submitting any bio to dm-core or the default-key target.
+echo 'Gate 2 device-node identity and kernel topology:'
+dmsetup info -c -o name,major,minor,open,segments dk_test
+ls -l /dev/mapper/dk_test /dev/dm-* 2>/dev/null || :
+stat -Lc 'mapper type=%F major=%t minor=%T inode=%i' /dev/mapper/dk_test
+cat /proc/partitions
+for devfile in /sys/block/dm-*/dev; do
+  [ -e "$devfile" ] || continue
+  echo "$devfile: $(cat "$devfile")"
+done
+if [ ! -b /dev/mapper/dk_test ]; then
+  echo 'FAIL gate2: /dev/mapper/dk_test is not a block device' >&2
+  exit 1
+fi
+# Compare the mapped node with the kernel-reported device number, not
+# merely the presence of a path created by dmsetup/udev.
+dm_maj=$(dmsetup info -c --noheadings -o major dk_test | tr -d '[:space:]')
+dm_min=$(dmsetup info -c --noheadings -o minor dk_test | tr -d '[:space:]')
+node_maj_hex=$(stat -Lc '%t' /dev/mapper/dk_test)
+node_min_hex=$(stat -Lc '%T' /dev/mapper/dk_test)
+if [ "$((0x$node_maj_hex))" -ne "$dm_maj" ] || [ "$((0x$node_min_hex))" -ne "$dm_min" ]; then
+  echo "FAIL gate2: mapper node device number differs from dmsetup ($dm_maj:$dm_min)" >&2
+  exit 1
+fi
+echo "PASS gate2 diagnostic: mapped block node matches dmsetup ($dm_maj:$dm_min)"
 # Samsung 4.9 rejects O_DIRECT at open on this dm block device (EINVAL).
 # Use synchronous buffered I/O and explicitly flush the mapped block device.
 if ! dd if="$DK_VECTOR_DIR/xts-plain-4096.bin" of=/dev/mapper/dk_test bs=4096 count=1 conv=notrunc,fsync 2>"$DK_TEST_DIR/gate2-write.err"; then
@@ -67,7 +94,7 @@ sync
 echo 'Gate 2 device mapping after writeback:'
 dmsetup deps dk_test
 echo 'Gate 2 kernel write-path diagnostics (dmesg):'
-dmesg | grep -E 'dk_test (map_write|write_submit|write_endio)|device-mapper: default-key' || :
+dmesg | grep -E 'dm-core __map_bio|dm-default-key|device-mapper: default-key' || :
 echo 'PASS gate2 diagnostic: mapped write and fsync completed; ciphertext KAT follows'
 # Force the backing device's buffered state to disk before validating raw bytes.
 sync
