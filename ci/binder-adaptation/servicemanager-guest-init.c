@@ -180,8 +180,8 @@ int main(void) {
       if(dup2(registrarpipe[1],1)<0 || dup2(registrarpipe[1],2)<0) _exit(126);
       close(registrarpipe[1]);
       setenv("LD_LIBRARY_PATH","/system/lib64",1);
-      execl("/system/bin/register-test-service-ndk","register-test-service-ndk",NULL);
-      perror("exec register-test-service-ndk");
+      execl("/register-test-service","register-test-service",NULL);
+      perror("exec /register-test-service");
       _exit(127);
     }
     close(registrarpipe[1]);
