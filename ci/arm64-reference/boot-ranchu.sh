@@ -89,12 +89,13 @@ PYGPT
     cp "$work/init.ranchu.rc" "$work/init.ranchu.original.rc"
     cat >> "$work/init.ranchu.rc" <<'RC'
 
-# QEMU-only vold diagnostic. stdout/stderr goes to the kernel log buffer.
-service dk_vold_logcat /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E
+# QEMU-only diagnostic using the stock shell console domain and serial output.
+service dk_vold_logcat /system/bin/sh -c "exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
     class core
     user root
-    group log readproc
-    stdio_to_kmsg
+    group shell log readproc
+    seclabel u:r:shell:s0
+    console ttyAMA0
     disabled
 
 on post-fs
