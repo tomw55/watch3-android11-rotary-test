@@ -28,6 +28,7 @@ CROSS_COMPILE=$("$repo/scripts/install-kernel-toolchain.sh" "$work/toolchain")
 policy_flags=()
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     cp "$repo/ci/binder-adaptation/servicemanager-test.conf" "$out/test.conf"
+    if [[ ${HIDL_GUEST:-0} == 1 ]]; then cp "$repo/ci/hidl-baseline/test.conf" "$out/test.conf"; fi
     policy_flags=(-M -U deny)
     checkpolicy "${policy_flags[@]}" -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
 else
@@ -125,6 +126,7 @@ cp include/uapi/linux/android/binder.h "$work/uapi/linux/android/"
 probe_source="$repo/ci/samsung-virt/probe.c"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     probe_source="$repo/ci/binder-adaptation/servicemanager-guest-init.c"
+    if [[ ${HIDL_GUEST:-0} == 1 ]]; then probe_source="$repo/ci/hidl-baseline/guest-init.c"; fi
 fi
 probe_flags=()
 if [[ -n ${BINDER_SECCTX_RUNTIME:-} ]]; then
@@ -183,6 +185,13 @@ timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
 printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    if [[ ${HIDL_GUEST:-0} == 1 ]]; then
+        for marker in 'PASS fixture SELinux policy loaded and readable' 'PASS hwservicemanager alive' 'PASS HIDL manager list' 'PASS HIDL self lookup ping interfaceChain' 'PASS HIDL transport baseline'; do
+            grep -Fq "$marker" "$out/serial.log" || { echo "Missing HIDL marker: $marker" >&2; exit 1; }
+        done
+        if grep -Eq 'FAIL |Kernel panic|Call trace:' "$out/serial.log"; then exit 1; fi
+        stage=complete; exit 0
+    fi
     grep -Fq 'PASS fixture SELinux policy loaded and readable' "$out/serial.log"
     grep -Fq 'PASS guest servicemanager init started' "$out/serial.log"
     grep -Fq 'PASS Binder device opened for real servicemanager test' "$out/serial.log"

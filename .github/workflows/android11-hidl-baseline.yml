@@ -1,0 +1,51 @@
+name: Android 11 HIDL context transport baseline
+on:
+  push:
+    branches: [test/android11-hidl-baseline]
+    paths:
+      - ci/hidl-baseline/**
+      - ci/samsung-virt/run.sh
+      - ci/binder-adaptation/acquire-servicemanager.sh
+      - .github/workflows/android11-hidl-baseline.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  hidl:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+      - name: Extract actual API30 hwservicemanager and libraries
+        run: HIDL_GUEST=1 bash ci/binder-adaptation/acquire-servicemanager.sh
+      - name: Build real HIDL client with pinned API30 platform headers
+        run: bash ci/hidl-baseline/build-client.sh 2>&1 | tee servicemanager-binary/hidl-build.log
+      - name: Execute Samsung 4.9 HIDL guest
+        run: |
+          HIDL_GUEST=1 \
+          BINDER_STAGE1_PATCH="$GITHUB_WORKSPACE/ci/binder-adaptation/context-manager-stage1.patch" \
+          BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
+          SERVICEMANAGER_GUEST_TAR="$GITHUB_WORKSPACE/servicemanager-binary/android11-servicemanager-guest.tar.gz" \
+          bash ci/samsung-virt/run.sh 2>&1 | tee servicemanager-binary/hidl-runner.log
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android11-hidl-${{ github.run_id }}
+          path: |
+            servicemanager-binary/*.txt
+            servicemanager-binary/*.log
+            servicemanager-binary/*SHA256SUMS
+            samsung-virt-evidence/

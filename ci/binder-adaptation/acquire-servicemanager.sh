@@ -120,6 +120,8 @@ import os, pathlib, re, subprocess, sys
 image, root = sys.argv[1:]
 root = pathlib.Path(root)
 pending = ["/system/bin/linker64", "/system/bin/servicemanager", "/system/bin/service", "/system/lib64/libbinder_ndk.so"]
+if os.environ.get("HIDL_GUEST") == "1":
+    pending += ["/system/bin/hwservicemanager", "/system/lib64/libhidlbase.so"]
 seen = set()
 missing = []
 while pending:
