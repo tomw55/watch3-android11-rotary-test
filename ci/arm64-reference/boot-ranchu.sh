@@ -82,6 +82,22 @@ PYGPT
     python3 "$(dirname "$0")/extract-logical.py" "$work/super-diagnostic.img" vendor "$work/vendor-diagnostic.ext4" \
         > "$out/diagnostic-vendor-liblp.json"
     test "$(od -An -j1080 -N2 -tx1 "$work/vendor-diagnostic.ext4" | tr -d '[:space:]')" = 53ef
+    # Explicit v1 file encryption for the fresh QEMU filesystem. Metadata
+    # encryption keeps its independently validated dm-default-key v2 contract.
+    fstab_path=/etc/fstab.ranchu
+    debugfs -R "dump $fstab_path $work/fstab.ranchu" "$work/vendor-diagnostic.ext4" > "$out/fscrypt-v1-injection.txt" 2>&1
+    test -s "$work/fstab.ranchu"
+    cp "$work/fstab.ranchu" "$out/fstab.before-v1"
+    python3 "$(dirname "$0")/fscrypt-v1-fstab.py" "$work/fstab.ranchu"
+    cp "$work/fstab.ranchu" "$out/fstab.effective-v1"
+    debugfs -w -R "rm $fstab_path" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -w -R "write $work/fstab.ranchu $fstab_path" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $fstab_path uid 0" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $fstab_path gid 0" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -w -R "set_inode_field $fstab_path mode 0100644" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -w -R "ea_set $fstab_path security.selinux u:object_r:vendor_configs_file:s0" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    debugfs -R "dump $fstab_path $work/fstab.readback" "$work/vendor-diagnostic.ext4" >> "$out/fscrypt-v1-injection.txt" 2>&1
+    cmp "$work/fstab.ranchu" "$work/fstab.readback"
     # Use the already-imported ranchu rc rather than relying on new-file discovery.
     rc_path=/etc/init/hw/init.ranchu.rc
     debugfs -R "dump $rc_path $work/init.ranchu.rc" "$work/vendor-diagnostic.ext4" > "$out/logcat-injection.txt" 2>&1
@@ -176,6 +192,7 @@ if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
         "$out/serial.log" > "$out/samsung-binder-diagnostics.txt" || true
     sed -n '1,100p' "$out/samsung-binder-diagnostics.txt"
     python3 "$(dirname "$0")/samsung-init-report.py" "$out" | tee "$out/samsung-init-observations.txt"
+    python3 "$(dirname "$0")/check-filecrypto.py" "$out/serial.log" | tee "$out/filecrypto-acceptance.txt"
 else
     python3 "$(dirname "$0")/boot-report.py" "$out"
 fi
