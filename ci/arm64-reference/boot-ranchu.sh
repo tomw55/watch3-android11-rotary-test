@@ -119,6 +119,23 @@ service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; th
 on post-fs
     start dk_vold_logcat
 RC
+    if [[ ${FRAMEWORK_SYSCALL_DIAG:-0} == 1 ]]; then
+        cat >> "$work/init.ranchu.rc" <<'TELEMETRY'
+
+# Read-only QEMU diagnostics; no property changes, no policy relaxation.
+service qemu_framework_telemetry /system/bin/sh -c "sleep 30; echo QEMU_TELEMETRY_BEGIN; getprop; echo QEMU_SYSTEM_SERVER_PIDS; pidof system_server; cat /proc/meminfo; cat /proc/swaps; grep -E 'pgmajfault|allocstall|pswpin|pswpout' /proc/vmstat; echo QEMU_TELEMETRY_END; sleep 30; echo QEMU_TELEMETRY_BEGIN; getprop; echo QEMU_SYSTEM_SERVER_PIDS; pidof system_server; cat /proc/meminfo; cat /proc/swaps; grep -E 'pgmajfault|allocstall|pswpin|pswpout' /proc/vmstat; echo QEMU_TELEMETRY_END; sleep 30; echo QEMU_TELEMETRY_BEGIN; getprop; echo QEMU_SYSTEM_SERVER_PIDS; pidof system_server; cat /proc/meminfo; cat /proc/swaps; grep -E 'pgmajfault|allocstall|pswpin|pswpout' /proc/vmstat; echo QEMU_TELEMETRY_END; sleep 30; echo QEMU_TELEMETRY_BEGIN; getprop; echo QEMU_SYSTEM_SERVER_PIDS; pidof system_server; cat /proc/meminfo; cat /proc/swaps; grep -E 'pgmajfault|allocstall|pswpin|pswpout' /proc/vmstat; echo QEMU_TELEMETRY_END; true"
+    class core
+    user root
+    group shell log readproc
+    seclabel u:r:shell:s0
+    console console
+    disabled
+    oneshot
+
+on post-fs-data
+    start qemu_framework_telemetry
+TELEMETRY
+    fi
     debugfs -w -R "rm $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
     debugfs -w -R "write $work/init.ranchu.rc $rc_path" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
     debugfs -w -R "set_inode_field $rc_path uid 0" "$work/vendor-diagnostic.ext4" >> "$out/logcat-injection.txt" 2>&1
