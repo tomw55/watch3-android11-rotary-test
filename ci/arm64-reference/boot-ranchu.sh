@@ -59,25 +59,28 @@ printf '%s\n' \
     'slot=30 address=a003c00 expected=vdd role=metadata snapshot=yes' \
     > "$out/expected-disks.txt"
 sha256sum "$userdata" > "$out/userdata-before.sha256"
-# QEMU-only diagnostic: vendor.img has a GPT with one ext4 vendor partition.
-# Never attempt debugfs on the whole GPT disk (system.img contains super).
+# QEMU-only diagnostic: Android mounts logical vendor from system.img super.
+# Modify a disposable copy of that logical partition, preserving its size.
 vendor_disk="$image/vendor.img"
+system_disk="$image/system.img"
 if [[ ${CAPTURE_VOLD_LOGCAT:-1} == 1 && -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
-    vendor_disk="$work/vendor-diagnostic.img"
-    cp --reflink=auto "$image/vendor.img" "$vendor_disk"
-    sfdisk --json "$vendor_disk" > "$out/vendor-diagnostic-gpt.json"
+    system_disk="$work/system-diagnostic.img"
+    cp --reflink=auto "$image/system.img" "$system_disk"
+    sfdisk --json "$system_disk" > "$out/vendor-diagnostic-gpt.json"
     read -r vendor_offset vendor_length < <(python3 - "$out/vendor-diagnostic-gpt.json" <<'PYGPT'
 import json, sys
 table = json.load(open(sys.argv[1]))["partitiontable"]
-parts = [p for p in table["partitions"] if p.get("name") == "vendor"]
+parts = [p for p in table["partitions"] if p.get("name") == "super"]
 if len(parts) != 1:
-    raise SystemExit("Expected exactly one vendor partition")
+    raise SystemExit("Expected exactly one super partition")
 print(parts[0]["start"] * table["sectorsize"], parts[0]["size"] * table["sectorsize"])
 PYGPT
     )
-    [[ $vendor_length -gt 0 && $((vendor_offset + vendor_length)) -le $(stat -c %s "$vendor_disk") ]]
-    dd if="$vendor_disk" of="$work/vendor-diagnostic.ext4" bs=4M \
+    [[ $vendor_length -gt 0 && $((vendor_offset + vendor_length)) -le $(stat -c %s "$system_disk") ]]
+    dd if="$system_disk" of="$work/super-diagnostic.img" bs=4M \
         iflag=skip_bytes,count_bytes skip="$vendor_offset" count="$vendor_length" status=none
+    python3 "$(dirname "$0")/extract-logical.py" "$work/super-diagnostic.img" vendor "$work/vendor-diagnostic.ext4" \
+        > "$out/diagnostic-vendor-liblp.json"
     test "$(od -An -j1080 -N2 -tx1 "$work/vendor-diagnostic.ext4" | tr -d '[:space:]')" = 53ef
     # Use the already-imported ranchu rc rather than relying on new-file discovery.
     rc_path=/etc/init/hw/init.ranchu.rc
@@ -110,7 +113,8 @@ RC
     grep -Fq 'service dk_vold_logcat' "$out/logcat-injection.txt"
     grep -Fq 'Mode:  0644' "$out/logcat-injection.txt" || grep -Eq 'Mode: +0100644|Mode: +0644' "$out/logcat-injection.txt"
     grep -Fq 'vendor_configs_file' "$out/logcat-injection.txt"
-    dd if="$work/vendor-diagnostic.ext4" of="$vendor_disk" bs=4M \
+    python3 "$(dirname "$0")/extract-logical.py" "$work/super-diagnostic.img" vendor "$work/vendor-diagnostic.ext4" --replace
+    dd if="$work/super-diagnostic.img" of="$system_disk" bs=4M \
         oflag=seek_bytes seek="$vendor_offset" conv=notrunc status=none
 fi
 # Test the shipped SwiftShader EGL libraries with a standard virtio GPU.
@@ -120,7 +124,7 @@ args=(
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
     -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.console=ttyAMA0 androidboot.logcat=*:V androidboot.hardware.egl=swiftshader androidboot.boot_devices=a003800.virtio_mmio,a003600.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
-    -drive "if=none,id=system,file=$image/system.img,format=raw,readonly=on"
+    -drive "if=none,id=system,file=$system_disk,format=raw,readonly=on"
     -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.28
     -drive "if=none,id=vendor,file=$vendor_disk,format=raw,readonly=on"
     -device virtio-blk-device,drive=vendor,bus=virtio-mmio-bus.27

@@ -17,9 +17,9 @@ def checked(blob, offset):
         raise ValueError("metadata checksum mismatch")
 
 
-def extract(source, name, destination):
+def extract(source, name, destination, replace=False):
     size = source.stat().st_size
-    with source.open("rb") as disk:
+    with source.open("r+b" if replace else "rb") as disk:
         disk.seek(GEOMETRY)
         geometry = disk.read(52)
         magic, length = struct.unpack_from("<II", geometry)
@@ -71,6 +71,24 @@ def extract(source, name, destination):
         total = sum(item[0] * SECTOR for item in selected)
         if not 0 < total <= size:
             raise ValueError("invalid logical partition size")
+        if replace:
+            if destination.stat().st_size != total:
+                raise ValueError("replacement must have identical logical size")
+            # Validate every destination extent before writing any bytes.
+            for sectors, kind, data, device in selected:
+                if kind != 0 or device != 0 or data * SECTOR + sectors * SECTOR > size:
+                    raise ValueError("replacement requires bounded linear extents")
+            with destination.open("rb") as replacement:
+                for sectors, kind, data, device in selected:
+                    disk.seek(data * SECTOR)
+                    remaining = sectors * SECTOR
+                    while remaining:
+                        chunk = replacement.read(min(remaining, CHUNK))
+                        if not chunk:
+                            raise ValueError("truncated replacement")
+                        disk.write(chunk)
+                        remaining -= len(chunk)
+            return
         with destination.open("wb") as output:
             for sectors, kind, data, device in selected:
                 length = sectors * SECTOR
@@ -94,4 +112,5 @@ def extract(source, name, destination):
 
 
 if __name__ == "__main__":
-    extract(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]))
+    extract(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]),
+            replace=len(sys.argv) == 5 and sys.argv[4] == "--replace")
