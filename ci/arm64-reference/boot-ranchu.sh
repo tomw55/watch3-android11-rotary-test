@@ -95,7 +95,7 @@ service dk_vold_logcat /system/bin/sh -c "exec /system/bin/logcat -b main -b sys
     user root
     group shell log readproc
     seclabel u:r:shell:s0
-    console ttyAMA0
+    console console
     disabled
 
 on post-fs
