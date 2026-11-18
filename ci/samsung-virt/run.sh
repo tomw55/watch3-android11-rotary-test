@@ -107,13 +107,15 @@ from pathlib import Path
 import re
 p = Path("drivers/md/dm.c")
 s = p.read_text()
-pattern = r'(static void __map_bio\s*\([^)]*\)\s*\{)'
-matches = list(re.finditer(pattern, s))
+pattern = r'(static void __map_bio\s*\([^)]*\)\s*\{)(.*?)(\n\s*(?:if\s*\(|[A-Za-z_]\w*\s*\(|return\s*;))'
+matches = list(re.finditer(pattern, s, re.S))
 if len(matches) != 1:
-    raise SystemExit("Expected exactly one Samsung dm.c __map_bio definition; found %d" % len(matches))
-probe = '    pr_warn("dm-core __map_bio entered\\n");\n'
+    raise SystemExit("Expected exactly one Samsung dm.c __map_bio body; found %d" % len(matches))
 m = matches[0]
-s = s[:m.end()] + '\n' + probe + s[m.end():]
+# Place the trace after declarations and before the first executable statement.
+# Linux 4.9 builds with -Werror=declaration-after-statement.
+probe = '\n    pr_warn("dm-core __map_bio entered\\n");'
+s = s[:m.start(3)] + probe + s[m.start(3):]
 p.write_text(s)
 print("Installed QEMU-only dm-core __map_bio entry probe")
 PYDMTRACE
