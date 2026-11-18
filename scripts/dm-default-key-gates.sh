@@ -12,6 +12,35 @@ if ! dmsetup targets | grep -Eq '^default-key[[:space:]]+v2\.0\.0$'; then
   echo 'FAIL gate1: default-key v2.0.0 not registered' >&2; exit 1
 fi
 echo 'PASS gate1: default-key v2.0.0 registered'
+# This initramfs has no udev daemon. Create missing mapper nodes using
+# kernel-reported device numbers, then verify them before any data I/O.
+ensure_mapper_node() (
+  name=$1
+  case "$name" in
+    dk_test|dk_err_backing|dk_err_test) ;;
+    *) echo "FAIL: unexpected disposable mapper name: $name" >&2; exit 1 ;;
+  esac
+  major=$(dmsetup info -c --noheadings -o major "$name" | tr -d '[:space:]')
+  minor=$(dmsetup info -c --noheadings -o minor "$name" | tr -d '[:space:]')
+  case "$major" in ''|*[!0-9]*) echo 'FAIL: invalid DM major' >&2; exit 1 ;; esac
+  case "$minor" in ''|*[!0-9]*) echo 'FAIL: invalid DM minor' >&2; exit 1 ;; esac
+  node=/dev/mapper/$name
+  if [ ! -e "$node" ] && [ ! -L "$node" ]; then
+    mknod -m 600 "$node" b "$major" "$minor"
+  fi
+  if [ ! -b "$node" ]; then
+    echo "FAIL: $node is not a block device" >&2
+    exit 1
+  fi
+  node_major=$(stat -Lc '%t' "$node")
+  node_minor=$(stat -Lc '%T' "$node")
+  if [ "$((0x$node_major))" -ne "$major" ] ||
+     [ "$((0x$node_minor))" -ne "$minor" ]; then
+    echo "FAIL: $node differs from kernel DM device $major:$minor" >&2
+    exit 1
+  fi
+  echo "PASS mapper node: $name matches kernel DM device $major:$minor"
+)
 backing="$DK_TEST_DIR/dm-default-key-disposable.img"
 [ ! -e "$backing" ] || { echo 'FAIL: backing file already exists' >&2; exit 1; }
 trap 'dmsetup remove dk_err_test 2>/dev/null || :; dmsetup remove dk_err_backing 2>/dev/null || :; dmsetup remove dk_test 2>/dev/null || :; [ -z "${loop:-}" ] || losetup -d "$loop" 2>/dev/null || :; rm -f "$backing"' EXIT HUP INT TERM
@@ -20,6 +49,7 @@ loop=$(losetup -f --show "$backing")
 key=$(cat "$DK_VECTOR_DIR/xts-key.hex")
 # The offset is expressed in 512-byte sectors: 16 sectors => DUN 2.
 printf '0 1024 default-key AES-256-XTS %s 16 %s 0 2 sector_size:4096 iv_large_sectors\n' "$key" "$loop" | dmsetup create dk_test
+ensure_mapper_node dk_test
 # Capture the live target geometry and loop dependency without printing the key.
 echo 'Gate 2 device mapping (key redacted by dmsetup):'
 dmsetup table dk_test | sed -E 's/[[:xdigit:]]{128}/[REDACTED_KEY]/g'
@@ -165,10 +195,12 @@ else
 fi
 # The error target is independent of the disposable backing image.
 dmsetup create dk_err_backing --table '0 64 error'
+ensure_mapper_node dk_err_backing
 if ! printf '0 64 default-key AES-256-XTS %s 0 /dev/mapper/dk_err_backing 0 2 sector_size:4096 iv_large_sectors\n' "$key" | dmsetup create dk_err_test; then
   dmsetup remove dk_err_backing || :
   echo 'FAIL error propagation: could not construct stacked target' >&2; exit 1
 fi
+ensure_mapper_node dk_err_test
 if dd if=/dev/mapper/dk_err_test of=/dev/null bs=4096 count=1 iflag=direct 2>"$DK_TEST_DIR/error-read.err"; then
   echo 'FAIL error propagation: read unexpectedly succeeded' >&2; exit 1
 fi
