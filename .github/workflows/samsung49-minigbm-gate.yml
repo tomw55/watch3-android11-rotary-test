@@ -46,7 +46,7 @@ jobs:
       - name: Record metadata
         if: always()
         run: |
-          for name in sources.txt compiler.txt guest-SHA256SUMS module-elf.txt probe-elf.txt; do
+          for name in build-result.txt backend-test.c wrong-resource-width.log ignored-create-error.log wrong-mmap-fd.log sources.txt compiler.txt guest-SHA256SUMS module-elf.txt probe-elf.txt; do
             if test -f "minigbm-work/$name"; then cp "minigbm-work/$name" minigbm-evidence/; fi
           done
           (cd minigbm-evidence && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > minigbm-evidence/SHA256SUMS
