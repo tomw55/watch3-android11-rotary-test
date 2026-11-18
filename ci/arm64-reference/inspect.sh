@@ -67,6 +67,7 @@ PYGPT
     fi
     test "$(od -An -j1080 -N2 -tx1 "$raw" | tr -d '[:space:]')" = 53ef
     debugfs -R 'ls -l /' "$raw" > "$out/$part-root.txt" 2>&1
+    bash "$script_dir/graphics-inventory.sh" "$raw" "$out/$part-graphics-dependencies.txt"
     for tree in / /system; do
         for dir in etc etc/init etc/selinux; do
             debugfs -R "ls -l ${tree%/}/$dir" "$raw" >> "$out/$part-layout.txt" 2>&1

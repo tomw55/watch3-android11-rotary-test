@@ -14,6 +14,8 @@ fi
 test "$(od -An -j56 -N4 -tx1 "$kernel" | tr -d '[:space:]')" = 41524d64
 sha256sum "$kernel" > "$out/boot-kernel-sha256.txt"
 qemu-system-aarch64 --version > "$out/qemu-version.txt"
+qemu-system-aarch64 -machine virt -display none -device help > "$out/qemu-device-models.txt" 2>&1
+qemu-system-aarch64 -machine virt,help > "$out/qemu-virt-options.txt" 2>&1
 # Use adjacent virtio-mmio slots for the guest disks so Android can
 # match platform parent names when generating /dev/block/by-name links.
 # Keep stock GPTs and ramdisk intact. Set no AVB or SELinux overrides.
@@ -106,7 +108,7 @@ PYGPT
     cat >> "$work/init.ranchu.rc" <<'RC'
 
 # QEMU-only diagnostic using the stock shell console domain and serial output.
-service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
+service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; if grep -q ' /sys/fs/fuse/connections fusectl ' /proc/mounts; then echo PASS_QEMU_FUSECTL_MOUNT; else echo NOT_OBSERVED_QEMU_FUSECTL_MOUNT; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V *:E"
     class core
     user root
     group shell log readproc
