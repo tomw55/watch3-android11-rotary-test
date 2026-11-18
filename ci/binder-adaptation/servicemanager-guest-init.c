@@ -45,8 +45,22 @@ int main(void) {
   if(access("/system/etc/selinux/plat_service_contexts",R_OK)==0)
     logmsg("PASS Android 11 platform service contexts available\n");
   else logmsg("WARN Android 11 platform service contexts unavailable\n");
-  // Determine whether the test name actually resolves in the packaged
-  // Android 11 service-label map, without modifying the production map.
+  // This is an isolated initramfs, not a production Android partition.
+  // Supply a label for our synthetic test service before servicemanager
+  // reads the service-context map. Use an existing Android platform type;
+  // do not introduce an unknown SELinux type into the extracted policy.
+  {
+    const char *path="/system/etc/selinux/plat_service_contexts";
+    FILE *contexts=fopen(path,"a");
+    if(contexts) {
+      if(fputs("\\nwatch3.test.echo u:object_r:default_android_service:s0\\n",contexts)<0 ||
+         fclose(contexts)!=0)
+        logmsg("FAIL could not append guest-only test service context\\n");
+      else
+        logmsg("PASS guest-only test service context installed\\n");
+    } else perror("append guest-only service context");
+  }
+  // Confirm that the synthetic service resolves in the guest-local map.
   {
     FILE *contexts=fopen("/system/etc/selinux/plat_service_contexts","r");
     if(contexts) {
@@ -180,8 +194,8 @@ int main(void) {
       if(dup2(registrarpipe[1],1)<0 || dup2(registrarpipe[1],2)<0) _exit(126);
       close(registrarpipe[1]);
       setenv("LD_LIBRARY_PATH","/system/lib64",1);
-      execl("/register-test-service","register-test-service",NULL);
-      perror("exec /register-test-service");
+      execl("/system/bin/register-test-service-ndk","register-test-service-ndk",NULL);
+      perror("exec Android 11 NDK registrar");
       _exit(127);
     }
     close(registrarpipe[1]);
