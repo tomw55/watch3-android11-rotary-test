@@ -1,0 +1,35 @@
+name: SM-R840 offline boot-readiness inventory
+on:
+  workflow_dispatch:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'scripts/watch3-boot-readiness.py'
+      - '.github/workflows/watch3-boot-readiness.yml'
+      - 'docs/**'
+      - 'ci/binder-adaptation/**'
+      - 'scripts/build-kernel.sh'
+      - 'scripts/audit-watch-firmware.py'
+permissions:
+  contents: read
+jobs:
+  evidence-inventory:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Generate fail-closed evidence report
+        run: python3 scripts/watch3-boot-readiness.py --output boot-readiness/report.json
+      - name: Display decision
+        if: always()
+        run: |
+          if [ -f boot-readiness/report.json ]; then
+            python3 -c 'import json; d=json.load(open("boot-readiness/report.json")); print("Decision:",d["decision"]); print("Missing repository inputs:",d["missing_repository_inputs"]); print("Unverified blockers:"); [print("-",x) for x in d["unverified_blockers"]]'
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: watch3-boot-readiness-${{ github.run_id }}
+          path: boot-readiness/report.json
+          retention-days: 30
