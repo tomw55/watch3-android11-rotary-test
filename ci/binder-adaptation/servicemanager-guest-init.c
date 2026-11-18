@@ -53,7 +53,7 @@ int main(void) {
     const char *path="/system/etc/selinux/plat_service_contexts";
     FILE *contexts=fopen(path,"a");
     if(contexts) {
-      if(fputs("\\nwatch3.test.echo u:object_r:default_android_service:s0\\n",contexts)<0 ||
+      if(fputs("\nwatch3.test.echo u:object_r:default_android_service:s0\n",contexts)<0 ||
          fclose(contexts)!=0)
         logmsg("FAIL could not append guest-only test service context\\n");
       else
