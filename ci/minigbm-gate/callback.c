@@ -1,4 +1,6 @@
-#define _GNU_SOURCE
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <hardware/gralloc.h>
@@ -14,8 +16,8 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
-/* Compile this C fixture without the C++-only cros header; the handle fields
- * used below are copied by memcpy from the separately pinned layout. */
+/* Pass the real native_handle integer payload unchanged; use the public
+ * allocation stride and explicitly requested RGBA format for this fixture. */
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL %s:%d: %s errno=%d (%s)\n",__FILE__,__LINE__,#x,errno,strerror(errno)); return 1; } } while(0)
 #define SW (GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN)
 struct wire { int nf,ni,w,h,stride; int ints[256]; };
