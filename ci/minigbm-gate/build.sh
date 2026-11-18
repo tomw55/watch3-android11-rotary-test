@@ -54,7 +54,7 @@ stage=libdrm_compile
 for f in xf86drm xf86drmHash xf86drmRandom xf86drmSL xf86drmMode; do
  "$cc" "${base[@]}" -DMAJOR_IN_SYSMACROS=1 -DHAVE_VISIBILITY=1 -DHAVE_LIBDRM_ATOMIC_PRIMITIVES=1 -c "$drm/$f.c" -o "$out/obj/$f.o"
 done
-"$cc" -shared -Wl,-soname,libdrm.so -Wl,--no-undefined "$out"/obj/xf86*.o -o "$lib/libdrm.so"
+"$cc" -shared -Wl,-soname,libdrm.so -Wl,--no-undefined "$out"/obj/xf86*.o -lm -o "$lib/libdrm.so"
 "$cc" "${base[@]}" -shared -Wl,-soname,libsync.so -Wl,--no-undefined "$out/src/core/libsync/sync.c" -o "$lib/libsync.so"
 stage=minigbm_compile
 cs=(amdgpu drv evdi exynos helpers_array helpers i915 marvell mediatek meson msm nouveau radeon rockchip tegra udl vc4 vgem virtio_gpu)

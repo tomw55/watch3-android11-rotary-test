@@ -5,6 +5,9 @@ on:
     paths:
       - ci/minigbm-gate/**
       - .github/workflows/samsung49-minigbm-gate.yml
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
   actions: read

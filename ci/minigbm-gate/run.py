@@ -44,3 +44,4 @@ with (out/'serial.log').open('w') as log:
         print('PASS actual Bionic gralloc callbacks, exec-isolated import and two scanout patterns')
     finally:
         if p.poll() is None:p.kill();p.wait()
+        sockpath.unlink(missing_ok=True)
