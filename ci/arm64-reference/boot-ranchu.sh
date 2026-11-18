@@ -108,7 +108,7 @@ PYGPT
     cat >> "$work/init.ranchu.rc" <<'RC'
 
 # QEMU-only diagnostic using the stock shell console domain and serial output.
-service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; if grep -q ' /sys/fs/fuse/connections fusectl ' /proc/mounts; then echo PASS_QEMU_FUSECTL_MOUNT; else echo NOT_OBSERVED_QEMU_FUSECTL_MOUNT; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V Zygote:I ZygoteInit:I installd:V AndroidRuntime:I *:E"
+service dk_vold_logcat /system/bin/sh -c "if [ -d /sys/fs/fuse/connections ]; then echo PASS_QEMU_FUSE_CONNECTIONS; else echo FAIL_QEMU_FUSE_CONNECTIONS; fi; if grep -q ' /sys/fs/fuse/connections fusectl ' /proc/mounts; then echo PASS_QEMU_FUSECTL_MOUNT; else echo NOT_OBSERVED_QEMU_FUSECTL_MOUNT; fi; exec /system/bin/logcat -b main -b system -b crash -v threadtime -s vold:V fscrypt:V Cryptfs:V Keymaster:V keymaster:V Zygote:I ZygoteInit:I installd:V AndroidRuntime:I SystemServer:I SurfaceFlinger:I ActivityManager:I *:E"
     class core
     user root
     group shell log readproc
@@ -148,17 +148,23 @@ TELEMETRY
     grep -Fq 'service dk_vold_logcat' "$out/logcat-injection.txt"
     grep -Fq 'Mode:  0644' "$out/logcat-injection.txt" || grep -Eq 'Mode: +0100644|Mode: +0644' "$out/logcat-injection.txt"
     grep -Fq 'vendor_configs_file' "$out/logcat-injection.txt"
+    if [[ -n ${GRAPHICS_PACKAGE_DIR:-} ]]; then
+        python3 "$(dirname "$0")/../graphics-hidl/apply-vendor-overlay.py" "$work/vendor-diagnostic.ext4" "$GRAPHICS_PACKAGE_DIR" "$out/graphics-overlay"
+    fi
     python3 "$(dirname "$0")/extract-logical.py" "$work/super-diagnostic.img" vendor "$work/vendor-diagnostic.ext4" --replace
     dd if="$work/super-diagnostic.img" of="$system_disk" bs=4M \
         oflag=seek_bytes seek="$vendor_offset" conv=notrunc status=none
 fi
 # Test the shipped SwiftShader EGL libraries with a standard virtio GPU.
 # Upstream QEMU does not provide Android Emulator renderControl services.
+qemu_ram_mb=${QEMU_RAM_MB:-3072}
+case "$qemu_ram_mb" in 1024|3072) ;; *) echo "Only measured-test profiles 1024 or 3072 MiB are accepted" >&2; exit 1 ;; esac
+printf '%s\n' "$qemu_ram_mb" > "$out/qemu-ram-mib.txt"
 args=(
-    -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m 3072
+    -machine virt,gic-version=2 -cpu cortex-a57 -accel tcg -smp 2 -m "$qemu_ram_mb"
     -nodefaults -display none -monitor none -serial stdio -no-reboot
     -kernel "$kernel" -initrd "$image/ramdisk.img"
-    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.console=ttyAMA0 androidboot.logcat=*:V androidboot.hardware.egl=swiftshader androidboot.boot_devices=a003800.virtio_mmio,a003600.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
+    -append 'console=ttyAMA0 earlycon=pl011,mmio32,0x09000000 rdinit=/init androidboot.hardware=ranchu androidboot.console=ttyAMA0 androidboot.logcat=*:V androidboot.boot_devices=a003800.virtio_mmio,a003600.virtio_mmio,a003c00.virtio_mmio qemu=1 ignore_loglevel printk.devkmsg=on panic=1'
     -drive "if=none,id=system,file=$system_disk,format=raw,readonly=on"
     -device virtio-blk-device,drive=system,bus=virtio-mmio-bus.28
     -drive "if=none,id=vendor,file=$vendor_disk,format=raw,readonly=on"
@@ -169,7 +175,7 @@ args=(
     -device virtio-blk-device,drive=metadata,bus=virtio-mmio-bus.30
     -device virtio-gpu-pci
 )
-if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
+if [[ -n ${SAMSUNG_INIT_KERNEL:-} && -z ${GRAPHICS_PACKAGE_DIR:-} ]]; then
     # Preserve every disk argument; remove only the graphics-specific trial.
     filtered=()
     for ((i=0; i<${#args[@]}; i++)); do
@@ -177,7 +183,7 @@ if [[ -n ${SAMSUNG_INIT_KERNEL:-} ]]; then
             ((i+=1))
             continue
         fi
-        filtered+=("${args[i]// androidboot.hardware.egl=swiftshader/}")
+        filtered+=("${args[i]///}")
     done
     args=("${filtered[@]}")
 fi

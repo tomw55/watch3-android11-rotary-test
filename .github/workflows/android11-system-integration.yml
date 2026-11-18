@@ -1,0 +1,59 @@
+name: Samsung 4.9 Android 11 full graphics integration
+on:
+  push:
+    branches: [test/android11-system-integration]
+    paths: ['ci/samsung-virt/**', 'ci/arm64-reference/**', 'ci/graphics-hidl/**', 'ci/drm-buffer-gate/**', 'scripts/dm-default-key-review-draft.c', 'scripts/dm-default-key-gates.sh', 'scripts/generate_dm_default_key_patch.py', 'patches/**', '.github/workflows/android11-system-integration.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  init:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Download immutable passing graphics components
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44375076616
+          name: android11-graphics-44375076616
+          path: graphics-evidence
+      - name: Verify exact package and pure configuration transforms
+        run: |
+          python3 ci/graphics-hidl/verify-package.py "$GITHUB_WORKSPACE/graphics-evidence"
+          python3 ci/graphics-hidl/test-vendor-config.py
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc libssl-dev xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm gcc-aarch64-linux-gnu checkpolicy python3-cryptography debootstrap qemu-user-static binfmt-support ubuntu-keyring
+      - name: Compile Samsung 4.9 integration kernel
+        run: |
+          mkdir -p samsung-virt-evidence
+          cat ci/samsung-virt/android-init.config ci/drm-buffer-gate/drm.config > "$RUNNER_TEMP/system.config"
+          DRM_BUFFER_GATE=1 ANDROID_INIT_FRAGMENT="$RUNNER_TEMP/system.config" bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+        shell: bash
+      - name: Verify native graphics on the exact full-integration kernel
+        run: python3 ci/graphics-hidl/run-native-preflight.py "$GITHUB_WORKSPACE/samsung-virt-evidence/Image" "$GITHUB_WORKSPACE/graphics-evidence" "$GITHUB_WORKSPACE/system-native-graphics"
+      - name: Attempt Android 11 ARM64 init once
+        run: |
+          GRAPHICS_PACKAGE_DIR="$GITHUB_WORKSPACE/graphics-evidence/servicemanager-binary/composer-package" FRAMEWORK_SYSCALL_DIAG=1 TRY_RANCHU_QEMU=1 SAMSUNG_INIT_KERNEL="$GITHUB_WORKSPACE/samsung-virt-evidence/Image"             bash ci/arm64-reference/inspect.sh
+      - name: Validate dm-default-key gates 1-3 in disposable ARM64 QEMU
+        if: always()
+        run: |
+          bash ci/samsung-virt/run-dm-gates.sh "$GITHUB_WORKSPACE/samsung-virt-evidence/Image" "$GITHUB_WORKSPACE/dm-gates-evidence"
+      - name: Require actual Android framework completion
+        if: always()
+        run: python3 ci/arm64-reference/check-framework.py arm64-reference-evidence/serial.log
+      - name: Upload kernel config and boot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android11-system-${{ github.run_id }}
+          path: |
+            samsung-virt-evidence/
+            arm64-reference-evidence/
+            dm-gates-evidence/
+            system-native-graphics/
