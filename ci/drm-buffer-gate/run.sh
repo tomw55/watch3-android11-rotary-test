@@ -42,7 +42,8 @@ timeout 90 qemu-system-aarch64 "${args[@]}" > "$out/serial.log" 2>&1 || rc=$?
 printf '%s\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
 grep -Fq 'PASS DRM_RAW_BUFFER_GATE' "$out/serial.log"
-for marker in 'PASS primary and render nodes opened' 'PASS PRIME fd export'     'PASS child PRIME import' 'PASS child imported DRM-fd mmap and parent pattern'     'PASS child ADDFB2' 'PASS parent sees child CPU writes'; do
+for marker in 'PASS primary and render nodes opened' 'PASS PRIME fd export'     'PASS child PRIME import' 'PASS child imported DRM-fd mmap and parent pattern'     'PASS child ADDFB2' 'PASS parent sees child CPU writes' \
+    'PASS render resource lifecycle' 'PASS render-created buffer primary-node ADDFB2'; do
     grep -Fq "$marker" "$out/serial.log"
 done
 if grep -Eq '^FAIL|BUG:|Kernel panic|Call trace:' "$out/serial.log"; then

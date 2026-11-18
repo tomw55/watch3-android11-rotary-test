@@ -18,6 +18,8 @@
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_fourcc.h>
+#include <drm/virtgpu_drm.h>
+#include <linux/virtio_gpu.h>
 
 struct buffer_info {
     uint32_t width, height, pitch, reserved;
@@ -362,6 +364,174 @@ out:
     return result;
 }
 
+/* Raw protocol prerequisite for minigbm's render-node selection. */
+static int render_child(int socket)
+{
+    struct buffer_info info = {0};
+    struct drm_prime_handle imported = {0}, kms_import = {0};
+    struct drm_virtgpu_map map = {0};
+    struct drm_gem_close close_handle = {0};
+    struct drm_mode_fb_cmd2 fb = {0};
+    int shared = -1, render = -1, kms = -1, result = 1;
+    void *address = MAP_FAILED;
+    shared = receive_buffer(socket, &info);
+    if (shared < 0 || info.width != 64 || info.height != 64 ||
+        info.pitch != 256 || info.size != 16384 || info.reserved)
+        goto out;
+    render = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+    if (render < 0 || verify_driver(render))
+        goto out;
+    imported.fd = shared;
+    if (ioctl(render, DRM_IOCTL_PRIME_FD_TO_HANDLE, &imported)) {
+        perror("FAIL render child PRIME import");
+        goto out;
+    }
+    map.handle = imported.handle;
+    if (ioctl(render, DRM_IOCTL_VIRTGPU_MAP, &map)) {
+        perror("FAIL render child VIRTGPU_MAP");
+        goto out;
+    }
+    address = mmap(NULL, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, render, map.offset);
+    if (address == MAP_FAILED || verify_bytes(address, info.size, 0x4a)) {
+        perror("FAIL render child CPU mapping/pattern");
+        goto out;
+    }
+    for (size_t i = 0; i < info.size; i++)
+        ((unsigned char *)address)[i] = pattern(i, 0xd2);
+    atomic_thread_fence(memory_order_seq_cst);
+    puts("PASS render child import VIRTGPU_MAP CPU read/write");
+    kms = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    kms_import.fd = shared;
+    if (kms < 0 || ioctl(kms, DRM_IOCTL_PRIME_FD_TO_HANDLE, &kms_import)) {
+        perror("FAIL render buffer KMS import");
+        goto out;
+    }
+    fb.width = info.width;
+    fb.height = info.height;
+    fb.pixel_format = DRM_FORMAT_ABGR8888;
+    fb.handles[0] = kms_import.handle;
+    fb.pitches[0] = info.pitch;
+    if (ioctl(kms, DRM_IOCTL_MODE_ADDFB2, &fb)) {
+        perror("FAIL render buffer ADDFB2");
+        goto out;
+    }
+    puts("PASS render-created buffer primary-node ADDFB2");
+    result = 0;
+out:
+    if (fb.fb_id && ioctl(kms, DRM_IOCTL_MODE_RMFB, &fb.fb_id))
+        result = 1;
+    if (address != MAP_FAILED && munmap(address, info.size))
+        result = 1;
+    if (kms_import.handle) {
+        close_handle.handle = kms_import.handle;
+        if (ioctl(kms, DRM_IOCTL_GEM_CLOSE, &close_handle))
+            result = 1;
+    }
+    if (imported.handle) {
+        close_handle.handle = imported.handle;
+        if (ioctl(render, DRM_IOCTL_GEM_CLOSE, &close_handle))
+            result = 1;
+    }
+    if (shared >= 0) close(shared);
+    if (render >= 0) close(render);
+    if (kms >= 0) close(kms);
+    close(socket);
+    return result;
+}
+
+static int probe_render_path(void)
+{
+    struct drm_mode_create_dumb dumb = { .width = 64, .height = 64, .bpp = 32 };
+    struct drm_virtgpu_resource_create resource = {
+        .target = 2, /* PIPE_TEXTURE_2D, required by the non-3D kernel path */
+        .format = VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM,
+        .width = 64, .height = 64, .depth = 1, .array_size = 1,
+        .size = 16384, .stride = 256
+    };
+    struct drm_virtgpu_map map = {0};
+    struct drm_prime_handle exported = { .flags = DRM_CLOEXEC | DRM_RDWR };
+    struct drm_gem_close close_handle = {0};
+    struct buffer_info info = {64, 64, 256, 0, 16384};
+    int render = -1, shared = -1, result = 1, sockets[2] = {-1, -1}, status = 0;
+    pid_t child = -1;
+    void *address = MAP_FAILED;
+    render = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+    if (render < 0 || verify_driver(render))
+        goto out;
+    if (ioctl(render, DRM_IOCTL_MODE_CREATE_DUMB, &dumb)) {
+        printf("OBSERVED render CREATE_DUMB errno=%d (%s)\n", errno, strerror(errno));
+    } else {
+        puts("OBSERVED render CREATE_DUMB supported");
+        close_handle.handle = dumb.handle;
+        if (ioctl(render, DRM_IOCTL_GEM_CLOSE, &close_handle))
+            goto out;
+    }
+    if (ioctl(render, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &resource)) {
+        perror("FAIL render RESOURCE_CREATE");
+        goto out;
+    }
+    map.handle = resource.bo_handle;
+    if (ioctl(render, DRM_IOCTL_VIRTGPU_MAP, &map)) {
+        perror("FAIL render VIRTGPU_MAP");
+        goto out;
+    }
+    address = mmap(NULL, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, render, map.offset);
+    if (address == MAP_FAILED) {
+        perror("FAIL render DRM-fd mmap");
+        goto out;
+    }
+    for (size_t i = 0; i < info.size; i++)
+        ((unsigned char *)address)[i] = pattern(i, 0x4a);
+    atomic_thread_fence(memory_order_seq_cst);
+    exported.handle = resource.bo_handle;
+    if (ioctl(render, DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported)) {
+        perror("FAIL render PRIME export");
+        goto out;
+    }
+    shared = exported.fd;
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets))
+        goto out;
+    child = fork();
+    if (child < 0)
+        goto out;
+    if (!child) {
+        close(sockets[0]);
+        close(render);
+        close(shared);
+        munmap(address, info.size);
+        _exit(render_child(sockets[1]));
+    }
+    close(sockets[1]);
+    sockets[1] = -1;
+    if (send_buffer(sockets[0], shared, &info) ||
+        waitpid(child, &status, 0) != child)
+        goto out;
+    child = -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) ||
+        verify_bytes(address, info.size, 0xd2))
+        goto out;
+    puts("PASS render resource lifecycle and bidirectional process visibility");
+    result = 0;
+out:
+    if (child > 0) {
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+    }
+    if (address != MAP_FAILED && munmap(address, info.size))
+        result = 1;
+    for (int i = 0; i < 2; i++)
+        if (sockets[i] >= 0) close(sockets[i]);
+    if (shared >= 0) close(shared);
+    if (resource.bo_handle) {
+        close_handle.handle = resource.bo_handle;
+        if (ioctl(render, DRM_IOCTL_GEM_CLOSE, &close_handle))
+            result = 1;
+    }
+    if (render >= 0) close(render);
+    if (result) fputs("FAIL render-node resource lifecycle\n", stderr);
+    return result;
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -387,7 +557,7 @@ int main(int argc, char **argv)
         if (fd >= 0)
             close(fd);
         if (n > 0 && !strcmp(compatible, "linux,dummy-virt"))
-            result = probe();
+            result = probe() || probe_render_path();
         else
             fputs("FAIL unexpected guest machine identity\n", stderr);
     }
