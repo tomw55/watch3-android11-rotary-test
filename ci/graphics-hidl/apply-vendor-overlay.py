@@ -33,6 +33,12 @@ with tempfile.TemporaryDirectory(dir=out) as tmp:
   'mapper':context('/lib64/hw/android.hardware.graphics.mapper@3.0-impl-ranchu.so'),
   'composer-library':context('/lib64/hw/hwcomposer.ranchu.so'),
  }
+ debug('stats')
+ # Both old service definitions are replaced by this exact package. Remove
+ # their executables before adding the replacements, reclaiming blocks in
+ # the tightly sized SDK vendor filesystem. Leave other HALs/libraries alone.
+ for path in ['/etc/init/android.hardware.graphics.allocator@3.0-service.rc','/etc/init/android.hardware.graphics.composer@2.3-service.rc','/bin/hw/android.hardware.graphics.allocator@3.0-service','/bin/hw/android.hardware.graphics.composer@2.3-service']:
+  debug('stat '+path);debug('rm '+path)
  def write(path,data,mode,label):
   source=root/'payload';source.write_bytes(data)
   debug('rm '+path);debug(f'write {source} {path}')
@@ -58,9 +64,7 @@ with tempfile.TemporaryDirectory(dir=out) as tmp:
  original=dump('/etc/init/hw/init.ranchu.rc','ranchu.rc').decode()
  updated=config.ranchu_rc(original);(out/'ranchu.before.rc').write_text(original);(out/'ranchu.after.rc').write_text(updated)
  write('/etc/init/hw/init.ranchu.rc',updated.encode(),'0100644',labels['config'])
- # Replace only conflicting old graphics service definitions in this copy.
- for path in ['/etc/init/android.hardware.graphics.allocator@3.0-service.rc','/etc/init/android.hardware.graphics.composer@2.3-service.rc']:
-  debug('rm '+path)
+ debug('stats')
  (out/'derived-labels.txt').write_text('\n'.join(k+' '+v for k,v in labels.items())+'\n')
 (out/'vendor-overlay.log').write_text('\n'.join(log))
 print('PASS disposable vendor graphics overlay read-backs and inherited labels; runtime NOT RUN')

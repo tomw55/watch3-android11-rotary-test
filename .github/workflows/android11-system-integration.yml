@@ -36,12 +36,16 @@ jobs:
       - name: Install image inspection and QEMU tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm unzip file
+          sudo apt-get install -y xz-utils android-sdk-libsparse-utils e2fsprogs binutils fdisk cpio qemu-system-arm unzip file binutils-aarch64-linux-gnu
+      - name: Prepare stripped copies without changing ELF load contracts
+        run: |
+          python3 ci/graphics-hidl/test-load-contract.py "$GITHUB_WORKSPACE/graphics-evidence/servicemanager-binary/composer-package/vendor/bin/hw/android.hardware.graphics.composer@2.1-service"
+          python3 ci/graphics-hidl/prepare-package.py "$GITHUB_WORKSPACE/graphics-evidence/servicemanager-binary/composer-package" "$GITHUB_WORKSPACE/derived-graphics/package"
       - name: Exercise actual ext4 overlay on a synthetic host fixture
-        run: python3 ci/graphics-hidl/test-overlay.py "$GITHUB_WORKSPACE/graphics-evidence/servicemanager-binary/composer-package"
+        run: python3 ci/graphics-hidl/test-overlay.py "$GITHUB_WORKSPACE/derived-graphics/package"
       - name: Attempt Android 11 ARM64 init once using the retained Samsung kernel
         run: |
-          GRAPHICS_PACKAGE_DIR="$GITHUB_WORKSPACE/graphics-evidence/servicemanager-binary/composer-package" FRAMEWORK_SYSCALL_DIAG=1 TRY_RANCHU_QEMU=1 SAMSUNG_INIT_KERNEL="$GITHUB_WORKSPACE/samsung-virt-evidence/Image" bash ci/arm64-reference/inspect.sh
+          GRAPHICS_PACKAGE_DIR="$GITHUB_WORKSPACE/derived-graphics/package" FRAMEWORK_SYSCALL_DIAG=1 TRY_RANCHU_QEMU=1 SAMSUNG_INIT_KERNEL="$GITHUB_WORKSPACE/samsung-virt-evidence/Image" bash ci/arm64-reference/inspect.sh
       - name: Require actual Android framework completion
         if: always()
         run: python3 ci/arm64-reference/check-framework.py arm64-reference-evidence/serial.log
@@ -53,3 +57,4 @@ jobs:
           path: |
             samsung-virt-evidence/
             arm64-reference-evidence/
+            derived-graphics/derived-package.json
