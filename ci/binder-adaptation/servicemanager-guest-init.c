@@ -103,6 +103,39 @@ static int denied_service_test(int logfd) {
   return waited==child && WIFEXITED(status) && WEXITSTATUS(status)==0 &&
     strstr(output,"PASS Android 11 expected service-manager permission denial")?0:-1;
 }
+static int rpc_client_test(pid_t server) {
+  int pipes[2], status=0;pid_t waited=0;
+  char output[16384];size_t used=0;
+  if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK)<0)return -1;
+  pid_t child=fork();
+  if(child==0) {
+    close(pipes[0]);
+    if(dup2(pipes[1],1)<0 || dup2(pipes[1],2)<0)_exit(126);
+    close(pipes[1]);
+    char number[32];snprintf(number,sizeof number,"%ld",(long)server);
+    setenv("WATCH3_EXPECT_SERVER_PID",number,1);
+    setenv("LD_LIBRARY_PATH","/system/lib64",1);
+    execl("/system/bin/register-test-service-ndk","register-test-service-ndk","--client",NULL);
+    _exit(127);
+  }
+  close(pipes[1]);
+  if(child<0){close(pipes[0]);return -1;}
+  for(int i=0;i<100;i++) {
+    ssize_t n;
+    while(used<sizeof(output)-1 && (n=read(pipes[0],output+used,sizeof(output)-1-used))>0)used+=(size_t)n;
+    waited=waitpid(child,&status,WNOHANG);
+    if(waited<0 && errno==EINTR){waited=0;continue;}
+    if(waited!=0)break;
+    usleep(100000);
+  }
+  if(waited==0){kill(child,SIGKILL);waitpid(child,&status,0);}
+  ssize_t n;
+  while(used<sizeof(output)-1 && (n=read(pipes[0],output+used,sizeof(output)-1-used))>0)used+=(size_t)n;
+  close(pipes[0]);output[used]=0;
+  logmsg("RPC CLIENT OUTPUT: ");logmsg(output);
+  return waited==child && WIFEXITED(status) && WEXITSTATUS(status)==0 &&
+    strstr(output,"PASS Android 11 NDK RPC 32 round trips and malformed controls") && !strstr(output,"FAIL ")?0:-1;
+}
 int main(void) {
   mkdir("/proc",0755); mkdir("/sys",0755); mkdir("/dev",0755);
   mount("proc","/proc","proc",0,NULL);
@@ -331,6 +364,12 @@ int main(void) {
   if(result==0) {
     if(denied_service_test(logfd)==0)logmsg("PASS SELinux service-manager negative control\n");
     else logmsg("FAIL SELinux service-manager negative control\n");
+  }
+  if(result==0 && registrar>0) {
+    if(rpc_client_test(registrar)==0)logmsg("PASS registered Android service request reply gate\n");
+    else logmsg("FAIL registered Android service request reply gate\n");
+    char buffer[4096];ssize_t count;
+    while((count=read(registrarpipe[0],buffer,sizeof(buffer)-1))>0){buffer[count]=0;logmsg("RPC SERVER OUTPUT: ");logmsg(buffer);}
   }
   // A separate genuine Android 11 process queries the service registry via Binder.
   // The service CLI's "list" command uses libbinder and talks to servicemanager.

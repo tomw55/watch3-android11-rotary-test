@@ -192,6 +192,7 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
     fi
     grep -Fq 'REGISTRAR SELinux enabled=1 enforcing=1' "$out/serial.log"
     grep -Fq 'PASS SELinux service-manager negative control' "$out/serial.log"
+    grep -Fq 'PASS registered Android service request reply gate' "$out/serial.log"
     grep -Fq 'NDK REGISTER status=0' "$out/serial.log"
     grep -Fq 'PASS Android 11 test service discovered in registry' "$out/serial.log" || { echo 'FAIL registered service not discovered' >&2; exit 1; }
     grep -Fq 'PASS genuine Android 11 service list Binder registry query' "$out/serial.log" || {
