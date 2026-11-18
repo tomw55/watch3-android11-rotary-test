@@ -63,6 +63,46 @@ out:
   free(data);
   return result;
 }
+static int denied_service_test(int logfd) {
+  int pipes[2], status=0;pid_t waited=0;
+  char output[8192];size_t used=0;
+  if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK)<0)return -1;
+  pid_t child=fork();
+  if(child==0) {
+    close(pipes[0]);
+    if(dup2(pipes[1],1)<0 || dup2(pipes[1],2)<0)_exit(126);
+    close(pipes[1]);
+    setenv("LD_LIBRARY_PATH","/system/lib64",1);
+    setenv("WATCH3_TEST_SERVICE_NAME","watch3.test.denied",1);
+    setenv("WATCH3_EXPECT_DENIED","1",1);
+    execl("/system/bin/register-test-service-ndk","register-test-service-ndk",NULL);
+    _exit(127);
+  }
+  close(pipes[1]);
+  if(child<0){close(pipes[0]);return -1;}
+  for(int i=0;i<50;i++) {
+    ssize_t n;
+    while(used<sizeof(output)-1 && (n=read(pipes[0],output+used,sizeof(output)-1-used))>0)used+=(size_t)n;
+    waited=waitpid(child,&status,WNOHANG);
+    if(waited!=0)break;
+    usleep(100000);
+  }
+  if(waited==0){kill(child,SIGKILL);waitpid(child,&status,0);}
+  ssize_t n;
+  while(used<sizeof(output)-1 && (n=read(pipes[0],output+used,sizeof(output)-1-used))>0)used+=(size_t)n;
+  close(pipes[0]);output[used]=0;
+  logmsg("DENIAL CONTROL: ");logmsg(output);
+  if(logfd>=0) {
+    char logbuf[4096];
+    while((n=recv(logfd,logbuf,sizeof(logbuf),MSG_DONTWAIT))>0) {
+      logmsg("ANDROID DENIAL LOG: ");
+      for(ssize_t j=0;j<n;j++){unsigned char c=(unsigned char)logbuf[j];char text=(c>=32&&c<127)?(char)c:' ';if(write(1,&text,1)<0)break;}
+      logmsg("\n");
+    }
+  }
+  return waited==child && WIFEXITED(status) && WEXITSTATUS(status)==0 &&
+    strstr(output,"PASS Android 11 expected service-manager permission denial")?0:-1;
+}
 int main(void) {
   mkdir("/proc",0755); mkdir("/sys",0755); mkdir("/dev",0755);
   mount("proc","/proc","proc",0,NULL);
@@ -223,7 +263,6 @@ int main(void) {
       if(buf[n-1]!='\n') logmsg("\n");
     }
   }
-  close(childpipe[0]);
   pid_t result=waitpid(child,&status,WNOHANG);
   if(result==0) {
     logmsg("PASS real Android 11 servicemanager process alive after 5 seconds\n");
@@ -289,6 +328,10 @@ int main(void) {
       else logmsg("PASS Android 11 test service registrar running\n");
     }
   }
+  if(result==0) {
+    if(denied_service_test(logfd)==0)logmsg("PASS SELinux service-manager negative control\n");
+    else logmsg("FAIL SELinux service-manager negative control\n");
+  }
   // A separate genuine Android 11 process queries the service registry via Binder.
   // The service CLI's "list" command uses libbinder and talks to servicemanager.
   if(result==0) {
@@ -346,6 +389,7 @@ int main(void) {
       close(querypipe[0]);
     }
   }
+  close(childpipe[0]);
   if(registrarpipe[0]>=0) close(registrarpipe[0]);
   fflush(stdout);
   for(;;)pause();

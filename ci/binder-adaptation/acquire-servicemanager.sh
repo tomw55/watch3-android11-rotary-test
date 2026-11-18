@@ -189,7 +189,7 @@ fi
 ndk="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
 "$ndk/aarch64-linux-android30-clang++" -std=c++17 -Wall -Wextra -Werror -O2 \
   "$PWD/ci/binder-adaptation/register-test-service-ndk.cpp" \
-  -L "$out/guest/system/lib64" -lbinder_ndk \
+  -L "$out/guest/system/lib64" -lbinder_ndk -lselinux \
   -Wl,--dynamic-linker=/system/bin/linker64 \
   -o "$out/guest/system/bin/register-test-service-ndk"
 readelf -d "$out/guest/system/bin/register-test-service-ndk" | tee "$out/ndk-registrar-dependencies.txt"
