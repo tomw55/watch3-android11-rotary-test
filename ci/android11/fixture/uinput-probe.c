@@ -6,12 +6,14 @@
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include "tizen-detent-profile.h"
 
 int main(void)
 {
     struct uinput_setup setup = {
-        .id = {.bustype = BUS_VIRTUAL, .version = 1},
-        .name = "tizen_detent",
+        .id = {.bustype = TIZEN_DETENT_BUS, .vendor = TIZEN_DETENT_VENDOR,
+               .product = TIZEN_DETENT_PRODUCT, .version = TIZEN_DETENT_VERSION},
+        .name = TIZEN_DETENT_NAME,
     };
     int fd = open("/dev/uinput", O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -26,6 +28,7 @@ int main(void)
         ioctl(fd, UI_SET_RELBIT, REL_WHEEL) < 0 ||
         ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
         ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
+        ioctl(fd, UI_SET_PHYS, TIZEN_DETENT_NAME) < 0 ||
         ioctl(fd, UI_DEV_SETUP, &setup) < 0 ||
         ioctl(fd, UI_DEV_CREATE) < 0) {
         perror("uinput capability/setup/create ioctl");

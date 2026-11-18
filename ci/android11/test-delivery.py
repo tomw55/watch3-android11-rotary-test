@@ -133,9 +133,9 @@ def main():
             node, device_id = poll("selected data IDC and both input mappers", classified)
             caps = adb("shell", "getevent", "-lp", node)
             save("getevent-capabilities.txt", caps)
-            for capability in ("REL_X", "REL_Y", "REL_WHEEL", r"(?:BTN_LEFT|BTN_MOUSE)"):
-                if not re.search(r"\b" + capability + r"\b", caps):
-                    raise RuntimeError(f"Guest evdev capability absent: {capability}")
+            if not discovery.has_detent_capabilities(caps):
+                raise RuntimeError("Guest evdev capabilities differ from the stock Watch3 profile")
+            discovery.verify_guest_identity(node, "generator-input-identity.txt")
             focus = poll("focused receiver at rotation 0", lambda: (
                 log if "windowFocus=true viewFocus(fixture)=true viewFocus(decoy)=false rotation=0"
                 in (log := app_log()) else None

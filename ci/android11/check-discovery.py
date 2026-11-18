@@ -55,6 +55,29 @@ def reader_device(dump):
     return None
 
 
+def has_detent_capabilities(text):
+    return all(re.search(r"\b" + bit + r"\b", text) for bit in
+               ("REL_X", "REL_Y", "REL_WHEEL", r"(?:BTN_LEFT|BTN_MOUSE)"))
+
+
+def parse_identity(text):
+    fields = text.split()
+    if len(fields) != 4 or not all(re.fullmatch(r"[0-9a-fA-F]{1,4}", f) for f in fields):
+        raise ValueError("Expected four hexadecimal input identity fields")
+    return tuple(int(f, 16) for f in fields)
+
+
+def verify_guest_identity(node, evidence_name):
+    if not re.fullmatch(r"/dev/input/event\d+", node):
+        raise ValueError("Unexpected evdev path")
+    base = "/sys/class/input/" + Path(node).name + "/device/id/"
+    text = adb("shell", "cat", *(base + key for key in
+               ("bustype", "vendor", "product", "version")))
+    save(evidence_name, text)
+    if parse_identity(text) != (0x0006, 0x0001, 0x0001, 0x0100):
+        raise RuntimeError("Guest input identity differs from the stock Watch3 profile")
+
+
 def main():
     with (EVIDENCE / "uinput-probe.txt").open("w", encoding="utf-8") as probe_log:
         probe = sp.Popen(adb_args("shell", "-T", "/data/local/tmp/uinput-probe"),
@@ -78,9 +101,9 @@ def main():
             node = poll("EventHub selecting the staged IDC and both InputReader mappers", discovered)
             caps = adb("shell", "getevent", "-lp", node)
             save("probe-getevent.txt", caps)
-            for bit in ("REL_X", "REL_Y", "REL_WHEEL", r"(?:BTN_LEFT|BTN_MOUSE)"):
-                if not re.search(r"\b" + bit + r"\b", caps):
-                    raise RuntimeError(f"Missing guest evdev capability: {bit}")
+            if not has_detent_capabilities(caps):
+                raise RuntimeError("Guest evdev capabilities differ from the stock Watch3 profile")
+            verify_guest_identity(node, "probe-input-identity.txt")
             probe.stdin.write("q\n")
             probe.stdin.flush()
             if probe.wait(timeout=10):

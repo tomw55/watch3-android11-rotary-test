@@ -43,3 +43,8 @@ the app tests filter on device name and InputReader ID. This run tests
 Android guest delivery only. Physical Watch3 remains NO-GO.
 
 For local parser checks, run `cd ci/android11 && python3 test-delivery-host.py`.
+
+Stock R840 identity, source-verified Hall framing, updated host-only tests and
+remaining cursor/wake issues are documented in [physical/README.md](physical/README.md).
+The current guest generator uses bus/vendor/product/version 0006/0001/0001/0100;
+previous guest passes do not revalidate this updated identity automatically.

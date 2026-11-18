@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "provenance": "User-supplied stock Tizen SDB/sysfs and dlog observations; not independently collected in this session",
+  "target": {
+    "model": "SM-R840",
+    "revision": "08",
+    "firmware": "R840XXU1DWK2",
+    "kernel": "4.9.59"
+  },
+  "identity": {
+    "name": "tizen_detent",
+    "bus": 6,
+    "vendor": 1,
+    "product": 1,
+    "version": 256
+  },
+  "capabilities": {
+    "event_mask_hex": "7",
+    "relative_mask_hex": "103",
+    "key_codes": [
+      272
+    ],
+    "key_bitmap_text": "10000 0 0 0 0 0 0 0 0",
+    "key_bitmap_word_bits": null,
+    "modalias": "input:b0006v0001p0001e0100-e0,1,2,k110,r0,1,8,amlsfw"
+  },
+  "observed_boot_only": {
+    "sysfs_path": "/sys/devices/platform/detent/input/input18",
+    "event_path": "/dev/input/event18",
+    "enabled": 1,
+    "not_a_device_selector": true
+  },
+  "tizen_compositor_direction": {
+    "clockwise": 1,
+    "anticlockwise": -1
+  },
+  "raw_evdev_capture": "NOT RUN: owner UID 5001 cannot read root:input mode 0660 event node",
+  "wake_observation": "User reported LCDOn:bezel from stock Tizen; Android wake not tested",
+  "dt_property_names": [
+    "hall_sensor,gpio_a",
+    "hall_sensor,gpio_b",
+    "hall_sensor,gpio_c"
+  ],
+  "source": {
+    "archive_sha256": "1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f",
+    "driver": "drivers/input/misc/tizen_bezel.c",
+    "driver_sha256": "1d328f906788b0e30567d1f136ec42838ef00fe0440f335503e0611f8337fe90",
+    "header": "include/linux/input/tizen_bezel.h",
+    "header_sha256": "4bb79030323a13322e7af86d97cd38eb400b238da6dc23a0e13c1c8de3c2a199"
+  },
+  "source_contract": {
+    "direction_enum": {
+      "BZ_CW": 1,
+      "BZ_CC": -1,
+      "BZ_NA": 0
+    },
+    "clockwise_active_hall_cycle": [
+      1,
+      2,
+      4,
+      1
+    ],
+    "anticlockwise_active_hall_cycle": [
+      1,
+      4,
+      2,
+      1
+    ],
+    "frame": [
+      "EV_REL REL_WHEEL direction",
+      "EV_REL REL_X ((~active_hall_state) & 7)",
+      "EV_SYN SYN_REPORT 0"
+    ],
+    "physical_notches_per_cycle": "UNKNOWN"
+  },
+  "new_android_guest_identity_test": "NOT RUN"
+}

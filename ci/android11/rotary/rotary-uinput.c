@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include "../fixture/tizen-detent-profile.h"
 
 static volatile sig_atomic_t stopping;
 static void stop(int sig) { (void)sig; stopping = 1; }
@@ -41,6 +42,19 @@ static int frame(int fd, int wheel, int hall)
     return emit(fd, EV_SYN, SYN_REPORT, 0);
 }
 
+/* Source-defined active Hall states: CW A->B->C->A, CCW the reverse.
+ * A is only the synthetic initial state, not a measured physical position.
+ */
+static int next_hall_state(int state, int wheel)
+{
+    switch (state) {
+    case 1: return wheel > 0 ? 2 : 4;
+    case 2: return wheel > 0 ? 4 : 1;
+    case 4: return wheel > 0 ? 1 : 2;
+    default: return 0;
+    }
+}
+
 int main(int argc, char **argv)
 {
     bool dry = false, wrong_name = false, reverse = false;
@@ -53,7 +67,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    const char *name = wrong_name ? "tizen_detent_unmatched" : "tizen_detent";
+    const char *name = wrong_name ? "tizen_detent_unmatched" : TIZEN_DETENT_NAME;
     int fd = -1;
     if (!dry) {
         struct sigaction action = {.sa_handler = stop};
@@ -77,7 +91,9 @@ int main(int argc, char **argv)
          * registered capabilities only -- like the real driver, this
          * generator never emits a BTN_LEFT key event or a REL_Y motion.
          */
-        struct uinput_setup setup = {.id = {.bustype = BUS_VIRTUAL, .version = 1}};
+        struct uinput_setup setup = {.id = {.bustype = TIZEN_DETENT_BUS,
+            .vendor = TIZEN_DETENT_VENDOR, .product = TIZEN_DETENT_PRODUCT,
+            .version = TIZEN_DETENT_VERSION}};
         snprintf(setup.name, sizeof(setup.name), "%s", name);
         if (ioctl(fd, UI_SET_EVBIT, EV_REL) < 0 ||
             ioctl(fd, UI_SET_RELBIT, REL_WHEEL) < 0 ||
@@ -85,6 +101,7 @@ int main(int argc, char **argv)
             ioctl(fd, UI_SET_RELBIT, REL_Y) < 0 ||
             ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
             ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) < 0 ||
+            ioctl(fd, UI_SET_PHYS, TIZEN_DETENT_NAME) < 0 ||
             ioctl(fd, UI_DEV_SETUP, &setup) < 0 ||
             ioctl(fd, UI_DEV_CREATE) < 0) {
             perror("uinput setup/create");
@@ -103,11 +120,16 @@ int main(int argc, char **argv)
     size_t size = 0;
     int result = 0;
     int sign = reverse ? -1 : 1;
+    int hall_state = 1;
     while (!stopping && getline(&line, &size, stdin) >= 0) {
         line[strcspn(line, "\r\n")] = '\0';
         if (!strcmp(line, "quit")) break;
-        if (!strcmp(line, "cw")) result = frame(fd, sign, 5);
-        else if (!strcmp(line, "ccw")) result = frame(fd, -sign, 6);
+        if (!strcmp(line, "cw") || !strcmp(line, "ccw")) {
+            int wheel = !strcmp(line, "cw") ? sign : -sign;
+            hall_state = next_hall_state(hall_state, wheel);
+            result = frame(fd, wheel, (~hall_state) & 0x07);
+        }
+        /* Deliberate mapper-isolation control, not a stock rotation frame. */
         else if (!strcmp(line, "x")) result = frame(fd, 0, 5);
         else {
             fprintf(stderr, "Unknown command: %s\n", line);

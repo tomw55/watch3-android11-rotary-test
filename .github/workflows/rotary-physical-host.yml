@@ -1,0 +1,31 @@
+name: Watch3 physical-profile rotary host regressions
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'ci/android11/rotary/**'
+      - 'ci/android11/fixture/**'
+      - 'ci/android11/*.py'
+      - 'ci/android11/*.sha256'
+      - 'ci/android11/physical/*.json'
+      - 'ci/android11/physical/SHA256SUMS'
+      - '.github/workflows/rotary-physical-host.yml'
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Execute intercepted registration and synthetic-frame regressions
+        run: python3 ci/android11/rotary/tests/run-physical-host.py --out "$RUNNER_TEMP/rotary-physical-host"
+      - name: Preserve host-only evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rotary-physical-host-${{ github.run_id }}
+          path: ${{ runner.temp }}/rotary-physical-host/
+          if-no-files-found: error

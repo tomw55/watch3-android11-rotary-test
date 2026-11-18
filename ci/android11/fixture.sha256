@@ -1,2 +1,3 @@
 ae2f9cdd2750a277fea33b2f82185b0bbe7113ad5efa44cb1fde272e8e99cf95  fixture/tizen_detent.idc
-338083760797a42c6ceb174a84ee7c43943cfd9b404493fdc406cff439e37513  fixture/uinput-probe.c
+2302f5fddd5ca6f511802f7b83f2993dfa9a063e1fbb84d926c505e67d04f23b  fixture/uinput-probe.c
+e0d4fd61044e8d538c3e74afce5ad155755effe67b1fe5c27760125b3daa38a4  fixture/tizen-detent-profile.h
