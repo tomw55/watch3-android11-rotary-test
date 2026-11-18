@@ -48,6 +48,8 @@ jobs:
           BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
           SERVICEMANAGER_GUEST_TAR="$GITHUB_WORKSPACE/servicemanager-binary/android11-servicemanager-guest.tar.gz" \
           bash ci/samsung-virt/run.sh 2>&1 | tee servicemanager-binary/hidl-runner.log
+      - name: Build real composer components for image integration
+        run: bash ci/graphics-hidl/build-components.sh 2>&1 | tee servicemanager-binary/composer-build.log
       - name: Preserve complete evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -59,6 +61,7 @@ jobs:
             servicemanager-binary/*.log
             servicemanager-binary/*SHA256SUMS
             samsung-virt-evidence/
+            servicemanager-binary/composer-package/
             minigbm-build/*.txt
             minigbm-build/*.log
             minigbm-build/*SHA256SUMS

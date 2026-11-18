@@ -3,7 +3,7 @@ set -euo pipefail
 export ANDROID_HOME="$PWD/.android-sdk"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 bash ci/hidl-baseline/build-client.sh
-bash ci/minigbm-gate/build.sh "$PWD/minigbm-build"
+GRAPHICS_HIDL_BUILD=1 bash ci/minigbm-gate/build.sh "$PWD/minigbm-build"
 out="$PWD/servicemanager-binary"
 mg="$PWD/minigbm-build"
 vndk="$PWD/hidl-vndk"

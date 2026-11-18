@@ -1,0 +1,55 @@
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -7,6 +7,7 @@
+ #include "cros_gralloc_driver.h"
+ 
+ #include <cstdlib>
++#include <climits>
+ #include <fcntl.h>
+ #include <sys/mman.h>
+ #include <xf86drm.h>
+@@ -182,6 +183,13 @@
+ 		reserved_region_fd = -1;
+ 	}
+ 
++	/* Bound the trailing name and the native_handle integer count. */
++	if (descriptor->name.size() > SIZE_MAX - sizeof(struct cros_gralloc_handle) - sizeof(int)) {
++		if (reserved_region_fd >= 0)
++			close(reserved_region_fd);
++		drv_bo_destroy(bo);
++		return -EOVERFLOW;
++	}
+ 	num_bytes = sizeof(struct cros_gralloc_handle);
+ 	num_bytes += (descriptor->name.size() + 1);
+ 	/*
+@@ -189,12 +197,24 @@
+ 	 * native_handle_clone() copies data based on hnd->base.numInts.
+ 	 */
+ 	num_bytes = ALIGN(num_bytes, sizeof(int));
+-	num_ints = num_bytes - sizeof(native_handle_t) - num_fds;
+-	/*
+-	 * Malloc is used as handles are ultimetly destroyed via free in
+-	 * native_handle_delete().
+-	 */
+-	hnd = static_cast<struct cros_gralloc_handle *>(malloc(num_bytes));
++	num_ints = (num_bytes - sizeof(native_handle_t)) / sizeof(int) - num_fds;
++	if (num_ints > INT_MAX) {
++		if (reserved_region_fd >= 0)
++			close(reserved_region_fd);
++		drv_bo_destroy(bo);
++		return -EOVERFLOW;
++	}
++	/*
++	 * Zero initialization prevents exporting unused fields and padding.
++	 * Storage remains compatible with free in native_handle_delete().
++	 */
++	hnd = static_cast<struct cros_gralloc_handle *>(calloc(1, num_bytes));
++	if (!hnd) {
++		if (reserved_region_fd >= 0)
++			close(reserved_region_fd);
++		drv_bo_destroy(bo);
++		return -ENOMEM;
++	}
+ 	hnd->base.version = sizeof(hnd->base);
+ 	hnd->base.numFds = num_fds;
+ 	hnd->base.numInts = num_ints;

@@ -61,6 +61,7 @@ if [[ -n ${ANDROID_INIT_FRAGMENT:-} ]]; then
 fi
 if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
     cat "$(dirname "$0")/../drm-buffer-gate/drm.config" >> "$fragment"
+    printf 'CONFIG_FUTEX=y\nCONFIG_ADVISE_SYSCALLS=y\n' >> "$fragment"
 fi
 KCONFIG_ALLCONFIG="$fragment" make allnoconfig
 make olddefconfig
@@ -81,7 +82,7 @@ for symbol in ARCH_EXYNOS NOBLESSE SECURITY_SMACK SECURITY_SELINUX_DEVELOP; do
 done
 
 if [[ ${GRAPHICS_HIDL_GUEST:-0} == 1 ]]; then
-    for symbol in PCI PCI_HOST_GENERIC VIRTIO_PCI DRM DRM_VIRTIO_GPU SYNC_FILE; do
+    for symbol in PCI PCI_HOST_GENERIC VIRTIO_PCI DRM DRM_VIRTIO_GPU SYNC_FILE FUTEX ADVISE_SYSCALLS; do
         grep -Fx "CONFIG_$symbol=y" .config
     done
 fi

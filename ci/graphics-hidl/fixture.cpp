@@ -31,7 +31,7 @@ using android::hardware::graphics::common::V1_0::PixelFormat;
 extern "C" int is_selinux_enabled(void);
 extern "C" int security_getenforce(void);
 static constexpr char instance[]="watch3.graphics";
-static int fail(const char* text){printf("FAIL GRAPHICS %s errno=%d\n",text,errno);return 1;}
+static int fail(const char* text){printf("FAIL GRAPHICS %s\n",text);return 1;}
 static sp<IServiceManager> registry(){auto p=android::hardware::ProcessState::self()->getContextObject(nullptr);return p?sp<IServiceManager>(new BpHwServiceManager(p)):nullptr;}
 template<class T> static sp<T> load(const char* filename,const char* symbol){
  void* library=dlopen(filename,RTLD_NOW|RTLD_LOCAL);
@@ -95,8 +95,8 @@ static int importer(){
  if(write(3,"D",1)!=1)return fail("import completion");return 0;
 }
 static bool crossProcess(void* buffer,uint32_t width,uint32_t height,uint32_t stride){
- auto handle=static_cast<native_handle_t*>(buffer);if(handle->numFds!=1||handle->numInts<0||handle->numInts>64)return false;
- int pair[2];if(socketpair(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0,pair))return false;
+ auto handle=static_cast<native_handle_t*>(buffer);printf("GRAPHICS HANDLE fds=%d ints=%d\n",handle->numFds,handle->numInts);if(handle->numFds!=1||handle->numInts<0||handle->numInts>64){puts("FAIL GRAPHICS handle counts");return false;}
+ int pair[2];if(socketpair(AF_UNIX,SOCK_DGRAM|SOCK_CLOEXEC,0,pair)){perror("FAIL GRAPHICS socketpair");return false;}
  pid_t child=fork();if(!child){
   close(pair[0]);if(dup2(pair[1],3)<0)_exit(125);fcntl(3,F_SETFD,0);
   for(int fd=4;fd<1024;fd++)close(fd);
@@ -106,7 +106,7 @@ static bool crossProcess(void* buffer,uint32_t width,uint32_t height,uint32_t st
  Transfer p{};p.width=width;p.height=height;p.stride=stride;p.fds=handle->numFds;p.ints=handle->numInts;memcpy(p.values,handle->data+p.fds,size_t(p.ints)*sizeof(int));
  char control[CMSG_SPACE(sizeof(int))]{};struct iovec io{&p,sizeof p};struct msghdr msg{};msg.msg_iov=&io;msg.msg_iovlen=1;msg.msg_control=control;msg.msg_controllen=sizeof control;
  auto cm=CMSG_FIRSTHDR(&msg);cm->cmsg_level=SOL_SOCKET;cm->cmsg_type=SCM_RIGHTS;cm->cmsg_len=CMSG_LEN(sizeof(int));memcpy(CMSG_DATA(cm),handle->data,sizeof(int));
- if(sendmsg(pair[0],&msg,0)!=sizeof p)return false;
+ if(sendmsg(pair[0],&msg,0)!=sizeof p){perror("FAIL GRAPHICS sendmsg");return false;}
  struct timeval timeout{10,0};setsockopt(pair[0],SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);
  char result=0;ssize_t n=read(pair[0],&result,1);close(pair[0]);int status=0;
  if(n!=1||result!='D'){kill(child,SIGKILL);waitpid(child,&status,0);return false;}

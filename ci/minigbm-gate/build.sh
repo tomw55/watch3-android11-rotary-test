@@ -31,6 +31,11 @@ clone core https://android.googlesource.com/platform/system/core 348efca472d810d
 mg="$out/src/minigbm"; drm="$out/src/libdrm"; vndk="$out/src/vndk"
 git -C "$mg" apply --check "$repo/ci/minigbm-gate/qemu49-render-2d.patch"
 git -C "$mg" apply "$repo/ci/minigbm-gate/qemu49-render-2d.patch"
+if [[ ${GRAPHICS_HIDL_BUILD:-0} == 1 ]]; then
+ git -C "$mg" apply --check "$repo/ci/graphics-hidl/native-handle-accounting.patch"
+ git -C "$mg" apply "$repo/ci/graphics-hidl/native-handle-accounting.patch"
+ python3 "$repo/ci/graphics-hidl/test-handle-accounting.py" "$mg" "$out"
+fi
 cp "$repo/ci/minigbm-gate/qemu49_layout.h" "$mg/"
 python3 "$repo/ci/minigbm-gate/test-backend.py" "$mg" "$drm" "$repo/ci/minigbm-gate" "$out"
 stage=toolchain
