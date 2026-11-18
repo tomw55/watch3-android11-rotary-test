@@ -38,9 +38,9 @@ for name in android.hardware.graphics.allocator@2.0.so android.hardware.graphics
   test "$found" = 1 || { echo "Missing genuine graphics interface DSO $name" >&2;exit 1; }
  fi
 done
-incs=()
+incs=(-isystem "$mg/src/core/libsync/include")
 while IFS= read -r p; do incs+=(-isystem "$p"); done < <(find "$vndk/arm64/include" -type d \( -name include -o -name include_vndk -o -name gen \) | grep -v external/libcxx/ | sort)
-while IFS= read -r p; do incs+=(-I"$p"); done < <(find "$interfaces/graphics" -type d -name include | sort)
+while IFS= read -r p; do incs+=(-isystem "$p"); done < <(find "$interfaces/graphics" -type d -name include | sort)
 cc="$ANDROID_HOME/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
 flags=(-std=c++17 -nostdinc++ -isystem "$vndk/arm64/include/external/libcxx/include" -fno-rtti -Wall -Wextra -Werror -O2 "${incs[@]}")
 links=(-nostdlib++ -fuse-ld=lld -L"$out/guest/system/lib64" -Wl,-rpath-link,"$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux -lhardware -lbase -lsync -l:android.hardware.graphics.allocator@2.0.so -l:android.hardware.graphics.mapper@2.0.so -l:android.hardware.graphics.common@1.0.so)
