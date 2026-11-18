@@ -25,6 +25,11 @@ if (( license_rc != 0 )); then
 fi
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
   'system-images;android-30;google_apis;arm64-v8a' 'ndk;27.2.12479018' > "$out/sdk-install.log" 2>&1
+# HIDL platform headers use the Android 11-era libc++/Bionic header contract.
+# Keep the existing NDK 27 registrar build intact; use NDK r21e for HIDL only.
+if [[ ${HIDL_GUEST:-0} == 1 ]]; then
+  "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;21.4.7075529' > "$out/hidl-ndk-install.log" 2>&1
+fi
 image="$ANDROID_HOME/system-images/android-30/google_apis/arm64-v8a/system.img"
 test -s "$image"
 sha256sum "$image" > "$out/system-image.sha256"

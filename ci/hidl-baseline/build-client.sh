@@ -9,10 +9,10 @@ git -C "$vndk" sparse-checkout init --cone
 git -C "$vndk" sparse-checkout set arm64/include
 timeout 180 git -C "$vndk" checkout --detach FETCH_HEAD
 incs=()
-while IFS= read -r path; do incs+=(-I"$path"); done < <(find "$vndk/arm64/include" -type d \( -name include -o -name include_vndk -o -name gen \) | grep -v 'external/libcxx/' | sort)
-cc="$PWD/.android-sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
+while IFS= read -r path; do incs+=(-isystem "$path"); done < <(find "$vndk/arm64/include" -type d \( -name include -o -name include_vndk -o -name gen \) | grep -v 'external/libcxx/' | sort)
+cc="$PWD/.android-sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
 "$cc" --version > "$out/hidl-compiler.txt"
-"$cc" -std=c++14 -nostdinc++ -isystem "$vndk/arm64/include/external/libcxx/include" \
+"$cc" -std=c++17 -nostdinc++ -isystem "$vndk/arm64/include/external/libcxx/include" \
  -Wall -Wextra -Werror -O2 "${incs[@]}" ci/hidl-baseline/client.cpp \
  -nostdlib++ -L "$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux \
  -Wl,--dynamic-linker=/system/bin/linker64 -o "$out/guest/system/bin/hidl-client"

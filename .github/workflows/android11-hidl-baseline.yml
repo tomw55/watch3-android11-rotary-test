@@ -27,7 +27,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy
+          sudo apt-get install -y -qq android-sdk-libsparse-utils e2fsprogs unzip bc libssl-dev xz-utils qemu-system-arm gcc-aarch64-linux-gnu libc6-dev-arm64-cross checkpolicy libtinfo5
       - name: Extract actual API30 hwservicemanager and libraries
         run: HIDL_GUEST=1 bash ci/binder-adaptation/acquire-servicemanager.sh
       - name: Build real HIDL client with pinned API30 platform headers
