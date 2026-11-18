@@ -6,25 +6,29 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$out"/{src,obj,guest/system/bin,guest/system/lib64,guest/vendor/lib64/hw}
 clone() {
  local name=$1 url=$2 pin=$3
- git clone --filter=blob:none --no-checkout "$url" "$out/src/$name"
- git -C "$out/src/$name" checkout "$pin" -- .
- test "$(git -C "$out/src/$name" rev-parse "$pin^{commit}")" = "$pin"
+ shift 3
+ git init "$out/src/$name"
+ git -C "$out/src/$name" remote add origin "$url"
+ timeout 180 git -C "$out/src/$name" fetch --depth=1 --filter=blob:none origin "$pin"
+ test "$(git -C "$out/src/$name" rev-parse FETCH_HEAD)" = "$pin"
+ if (( $# )); then
+  git -C "$out/src/$name" checkout "$pin" -- "$@"
+ else
+  git -C "$out/src/$name" checkout --detach "$pin"
+ fi
  printf '%s %s %s\n' "$name" "$pin" "$url" >> "$out/sources.txt"
 }
 clone minigbm https://android.googlesource.com/platform/external/minigbm a3120e47088d7b898acca9ee55825ccbc03f427c
 clone libdrm https://android.googlesource.com/platform/external/libdrm 9d5089ee87931edcf5ba01949e0a11cf1a52b471
 # API 30 platform headers and ABI libraries, published in the VNDK-v30 snapshot.
 # This supporting snapshot is pinned separately and is NOT an r48 source tree.
-git clone --filter=blob:none --no-checkout https://android.googlesource.com/platform/prebuilts/vndk/v30 "$out/src/vndk"
-git -C "$out/src/vndk" checkout 95168a4aced97deb4966ef6f10c8fd6dee9f1582 -- arm64/include
-printf '%s\n' 'vndk30 95168a4aced97deb4966ef6f10c8fd6dee9f1582 platform/prebuilts/vndk/v30' >> "$out/sources.txt"
-git clone --filter=blob:none --no-checkout https://android.googlesource.com/platform/system/core "$out/src/core"
-git -C "$out/src/core" checkout 348efca472d810d3152568913da41a081893a4e3 -- libsync
-printf '%s\n' 'system/core 348efca472d810d3152568913da41a081893a4e3 android-11.0.0_r48' >> "$out/sources.txt"
+clone vndk https://android.googlesource.com/platform/prebuilts/vndk/v30 95168a4aced97deb4966ef6f10c8fd6dee9f1582 arm64/include
+clone core https://android.googlesource.com/platform/system/core 348efca472d810d3152568913da41a081893a4e3 libsync
 mg="$out/src/minigbm"; drm="$out/src/libdrm"; vndk="$out/src/vndk"
 git -C "$mg" apply --check "$repo/ci/minigbm-gate/qemu49-render-2d.patch"
 git -C "$mg" apply "$repo/ci/minigbm-gate/qemu49-render-2d.patch"
 cp "$repo/ci/minigbm-gate/qemu49_layout.h" "$mg/"
+python3 "$repo/ci/minigbm-gate/test-backend.py" "$mg" "$drm" "$repo/ci/minigbm-gate" "$out"
 ndk="${ANDROID_HOME:?}/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
 if [[ ! -x "$ndk/aarch64-linux-android30-clang" ]]; then
  "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.2.12479018'
@@ -32,7 +36,7 @@ fi
 cc="$ndk/aarch64-linux-android30-clang"; cxx="$ndk/aarch64-linux-android30-clang++"
 "$cc" --version > "$out/compiler.txt"
 incs=(-I"$mg" -I"$drm" -I"$drm/include/drm" -I"$drm/android" -I"$out/src/core/libsync/include")
-while IFS= read -r p; do incs+=(-I"$p"); done < <(find "$vndk/arm64/include" -type d -name include | grep -v 'external/libcxx/' | sort)
+while IFS= read -r p; do incs+=(-I"$p"); done < <(find "$vndk/arm64/include" -type d \( -name include -o -name include_vndk \) | grep -v 'external/libcxx/' | sort)
 incs+=(-I"$vndk/arm64/include/system/core/libcutils/include_vndk")
 base=(-O2 -g -fPIC -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64 -DANDROID_VERSION=0x0b00 -Wall -Wextra -Wno-unused-parameter "${incs[@]}")
 lib="$out/guest/system/lib64"
@@ -47,6 +51,7 @@ done
 "$cc" -shared -Wl,-soname,libdrm.so -Wl,--no-undefined "$out"/obj/xf86*.o -o "$lib/libdrm.so"
 "$cc" "${base[@]}" -shared -Wl,-soname,libsync.so -Wl,--no-undefined "$out/src/core/libsync/sync.c" -o "$lib/libsync.so"
 cs=(amdgpu drv evdi exynos helpers_array helpers i915 marvell mediatek meson msm nouveau radeon rockchip tegra udl vc4 vgem virtio_gpu)
+"$cc" "${base[@]}" -c "$mg/virtio_gpu.c" -o "$out/obj/virtio-profile-disabled.o"
 for f in "${cs[@]}"; do
  "$cc" "${base[@]}" -DMINIGBM_QEMU49_RENDER_2D -c "$mg/$f.c" -o "$out/obj/mg-$f.o"
 done

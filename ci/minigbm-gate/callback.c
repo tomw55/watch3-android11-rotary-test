@@ -46,7 +46,7 @@ static int transmit(int fd,buffer_handle_t h,int w,int height,int stride) {
     struct msghdr msg={.msg_iov=&io,.msg_iovlen=1,.msg_control=control.bytes,.msg_controllen=sizeof control};
     struct cmsghdr *c=CMSG_FIRSTHDR(&msg);c->cmsg_level=SOL_SOCKET;c->cmsg_type=SCM_RIGHTS;c->cmsg_len=CMSG_LEN(sizeof(int));
     memcpy(CMSG_DATA(c),h->data,sizeof(int));
-    return sendmsg(fd,&msg,MSG_NOSIGNAL)==sizeof wire?0:-1;
+    return sendmsg(fd,&msg,MSG_NOSIGNAL)==(ssize_t)sizeof wire?0:-1;
 }
 static native_handle_t *receive_handle(int fd,struct wire *wire) {
     struct iovec io={wire,sizeof *wire};
@@ -63,7 +63,7 @@ static native_handle_t *receive_handle(int fd,struct wire *wire) {
         }
     }
     native_handle_t *h=NULL;
-    if(n==sizeof *wire && !(msg.msg_flags&(MSG_TRUNC|MSG_CTRUNC)) && count==1 &&
+    if(n==(ssize_t)sizeof *wire && !(msg.msg_flags&(MSG_TRUNC|MSG_CTRUNC)) && count==1 &&
        wire->nf==1 && wire->ni>0 && wire->ni<=256 && wire->w>0 && wire->h>0 &&
        wire->w<=8192 && wire->h<=8192 && wire->stride>=wire->w && wire->stride<=16384) {
         h=native_handle_create(1,wire->ni);

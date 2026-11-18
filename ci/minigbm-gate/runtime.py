@@ -5,7 +5,9 @@ out, repo = map(pathlib.Path, sys.argv[1:])
 archive = out/'api30.zip'
 urllib.request.urlretrieve('https://dl.google.com/android/repository/sys-img/google_apis/arm64-v8a-30_r16.zip', archive)
 with archive.open('rb') as f:
-    assert hashlib.file_digest(f, 'sha256').hexdigest() == '097c2808a738ba4c19038b75a085750dd61a7178c0234b14ac5f8270dd8cff54'
+    digest=hashlib.sha256()
+    for chunk in iter(lambda:f.read(4*1024*1024),b''):digest.update(chunk)
+    assert digest.hexdigest() == '097c2808a738ba4c19038b75a085750dd61a7178c0234b14ac5f8270dd8cff54'
 with zipfile.ZipFile(archive) as z:
     names=[n for n in z.namelist() if n.endswith('/system.img')]
     assert len(names)==1
