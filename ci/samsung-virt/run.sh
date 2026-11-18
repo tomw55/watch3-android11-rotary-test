@@ -147,6 +147,9 @@ if [[ ${DRM_BUFFER_GATE:-0} == 1 ]]; then
     # The archive has no gpu/arm/Makefile. Keep generic DRM/VGA only.
     grep -Fq 'drm/ vga/ arm/ exynos/' drivers/gpu/Makefile
     sed -i 's@drm/ vga/ arm/ exynos/@drm/ vga/@' drivers/gpu/Makefile
+    # Samsung gates drm_edid.o with the hidden HDMI symbol.
+    # A second Kconfig definition adds the dependency to VirtIO-GPU only.
+    printf '\nconfig DRM_VIRTIO_GPU\n\tselect HDMI\n' >> drivers/gpu/drm/virtio/Kconfig
     echo "Retained generic DRM GPU subtree for the disposable buffer gate."
 else
     sed -i -E '/^obj-y[[:space:]]*\+=[[:space:]]*gpu\/[[:space:]]*$/d' drivers/Makefile
