@@ -6,6 +6,7 @@ on:
       - '.github/workflows/android11-servicemanager-qemu.yml'
       - 'ci/binder-adaptation/acquire-servicemanager.sh'
       - 'ci/binder-adaptation/servicemanager-guest-init.c'
+      - 'ci/binder-adaptation/servicemanager-test.conf'
       - 'ci/binder-adaptation/register-test-service.c'
       - 'ci/binder-adaptation/register-test-service-ndk.c'
       - 'ci/binder-adaptation/register-test-service-ndk.cpp'
@@ -46,7 +47,5 @@ jobs:
           path: |
             servicemanager-binary/*.txt
             servicemanager-binary/*.log
-            samsung-virt-evidence/serial.log
-            samsung-virt-evidence/result.txt
-            samsung-virt-evidence/runner.log
+            samsung-virt-evidence/
           retention-days: 7

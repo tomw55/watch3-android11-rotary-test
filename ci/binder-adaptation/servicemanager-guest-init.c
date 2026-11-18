@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <stdint.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
@@ -17,6 +18,51 @@
 #include <sys/wait.h>
 #include <unistd.h>
 static void logmsg(const char *s) { size_t n=strlen(s); while(n) { ssize_t w=write(1,s,n); if(w<0) { if(errno==EINTR) continue; break; } if(w==0) break; s+=w; n-=(size_t)w; } }
+/* selinuxfs load is a single whole-policy write, never chunked writes. */
+static int load_test_policy(void) {
+  int fd=-1, load=-1, exported=-1, enforcing=-1, result=-1;
+  unsigned char *data=NULL;
+  struct stat st;
+  fd=open("/test.policy",O_RDONLY|O_CLOEXEC);
+  if(fd<0 || fstat(fd,&st)<0 || st.st_size<=0 || st.st_size>16*1024*1024) {
+    perror("FAIL open/stat fixture policy");goto out;
+  }
+  size_t length=(size_t)st.st_size, used=0;
+  data=malloc(length);
+  if(!data) { perror("FAIL allocate fixture policy");goto out; }
+  while(used<length) {
+    ssize_t n=read(fd,data+used,length-used);
+    if(n<0 && errno==EINTR)continue;
+    if(n<=0) { perror("FAIL read complete fixture policy");goto out; }
+    used+=(size_t)n;
+  }
+  close(fd);fd=-1;
+  load=open("/sys/fs/selinux/load",O_WRONLY|O_CLOEXEC);
+  if(load<0) { perror("FAIL open selinuxfs load");goto out; }
+  ssize_t written;
+  do { written=write(load,data,length); } while(written<0 && errno==EINTR);
+  if(written!=(ssize_t)length) { perror("FAIL whole SELinux policy load");goto out; }
+  close(load);load=-1;
+  exported=open("/sys/fs/selinux/policy",O_RDONLY|O_CLOEXEC);
+  unsigned char byte;
+  if(exported<0 || read(exported,&byte,1)!=1) {
+    perror("FAIL read back loaded SELinux policy");goto out;
+  }
+  enforcing=open("/sys/fs/selinux/enforce",O_RDONLY|O_CLOEXEC);
+  char value=0;
+  if(enforcing<0 || read(enforcing,&value,1)!=1 || value!='1') {
+    logmsg("FAIL loaded policy is not enforcing\n");goto out;
+  }
+  printf("PASS fixture SELinux policy loaded and readable bytes=%zu enforcing=1\n",length);
+  result=0;
+out:
+  if(fd>=0)close(fd);
+  if(load>=0)close(load);
+  if(exported>=0)close(exported);
+  if(enforcing>=0)close(enforcing);
+  free(data);
+  return result;
+}
 int main(void) {
   mkdir("/proc",0755); mkdir("/sys",0755); mkdir("/dev",0755);
   mount("proc","/proc","proc",0,NULL);
@@ -45,21 +91,19 @@ int main(void) {
   if(access("/system/etc/selinux/plat_service_contexts",R_OK)==0)
     logmsg("PASS Android 11 platform service contexts available\n");
   else logmsg("WARN Android 11 platform service contexts unavailable\n");
-  // This is an isolated initramfs, not a production Android partition.
-  // Supply a label for our synthetic test service before servicemanager
-  // reads the service-context map. Use an existing Android platform type;
-  // do not introduce an unknown SELinux type into the extracted policy.
+  /* Replace only this disposable guest's label map. The extracted platform
+   * policy/map is not a compatible pair with our deliberately small policy. */
   {
-    const char *path="/system/etc/selinux/plat_service_contexts";
-    FILE *contexts=fopen(path,"a");
-    if(contexts) {
-      if(fputs("\nwatch3.test.echo u:object_r:default_android_service:s0\n",contexts)<0 ||
-         fclose(contexts)!=0)
-        logmsg("FAIL could not append guest-only test service context\\n");
-      else
-        logmsg("PASS guest-only test service context installed\\n");
-    } else perror("append guest-only service context");
+    FILE *contexts=fopen("/system/etc/selinux/plat_service_contexts","w");
+    if(!contexts) { perror("FAIL create fixture service contexts");return 1; }
+    int rc=fputs("manager u:object_r:watch3_manager_service_t:s0\n"
+                 "watch3.test.echo u:object_r:watch3_test_service_t:s0\n"
+                 "watch3.test.denied u:object_r:watch3_denied_service_t:s0\n",contexts);
+    int closed=fclose(contexts);
+    if(rc<0 || closed!=0) { logmsg("FAIL write fixture service contexts\n");return 1; }
+    logmsg("PASS guest-only service contexts match fixture policy\n");
   }
+  if(load_test_policy()!=0)return 1;
   // Confirm that the synthetic service resolves in the guest-local map.
   {
     FILE *contexts=fopen("/system/etc/selinux/plat_service_contexts","r");
@@ -115,7 +159,6 @@ int main(void) {
     logmsg("PASS timerfd_create available in QEMU guest\n");
     close(timerfd);
   }
-  mkdir("/dev/binderfs",0755);
   int fd=open("/dev/binder",O_RDWR);
   if(fd<0){perror("open /dev/binder");logmsg("FAIL Binder device unavailable\n");}
   else {logmsg("PASS Binder device opened for real servicemanager test\n");close(fd);}

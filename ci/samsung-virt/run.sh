@@ -25,7 +25,14 @@ CROSS_COMPILE=$("$repo/scripts/install-kernel-toolchain.sh" "$work/toolchain")
     qemu-system-aarch64 --version
     checkpolicy -V
 } > "$out/tools.txt"
-cp "$repo/ci/samsung-virt/test.conf" "$out/"
+policy_flags=()
+if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    cp "$repo/ci/binder-adaptation/servicemanager-test.conf" "$out/test.conf"
+    policy_flags=(-M -U deny)
+    checkpolicy "${policy_flags[@]}" -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
+else
+    cp "$repo/ci/samsung-virt/test.conf" "$out/"
+fi
 # Use the existing accepted and compiler compatibility series, in order.
 for patchfile in "$repo"/patches/{accepted,ci-compat}/*.patch; do
     patch --batch --fuzz=0 -p1 < "$patchfile"
@@ -134,7 +141,9 @@ if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
         -I "$work/uapi" "$repo/ci/binder-adaptation/register-test-service.c" \
         -o "$work/register-test-service"
 fi
-checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
+if [[ -z ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    checkpolicy -c 30 -o "$work/test.policy" "$out/test.conf" 2>&1 | tee "$out/policy-build.log"
+fi
 cc -O2 usr/gen_init_cpio.c -o "$work/gen_init_cpio"
 cat > "$work/initramfs.list" <<LIST
 dir /dev 755 0 0
@@ -174,6 +183,7 @@ timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
 printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
+    grep -Fq 'PASS fixture SELinux policy loaded and readable' "$out/serial.log"
     grep -Fq 'PASS guest servicemanager init started' "$out/serial.log"
     grep -Fq 'PASS Binder device opened for real servicemanager test' "$out/serial.log"
     if grep -Eq 'RESULT real Android 11 servicemanager (exited|signal=)|exec servicemanager:|FAIL ' "$out/serial.log"; then
