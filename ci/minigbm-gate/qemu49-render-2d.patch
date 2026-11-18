@@ -1,0 +1,132 @@
+--- a/virtio_gpu.c
++++ b/virtio_gpu.c
+@@ -17,6 +17,9 @@
+ #include "util.h"
+ #include "virgl_hw.h"
+ #include "virtgpu_drm.h"
++#ifdef MINIGBM_QEMU49_RENDER_2D
++#include "qemu49_layout.h"
++#endif
+ 
+ #ifndef PAGE_SIZE
+ #define PAGE_SIZE 0x1000
+@@ -388,6 +391,39 @@
+ 	}
+ }
+ 
++#ifdef MINIGBM_QEMU49_RENDER_2D
++/* Explicit opt-in for the disposable QEMU profile. No Samsung display support. */
++static int qemu49_rgb_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format)
++{
++	struct drm_virtgpu_resource_create rc = {0};
++	uint32_t stride, resource_height, size;
++	int ret;
++
++	if (format != DRM_FORMAT_ABGR8888 && format != DRM_FORMAT_ARGB8888 &&
++	    format != DRM_FORMAT_XRGB8888 && format != DRM_FORMAT_XBGR8888)
++		return -EINVAL;
++	ret = qemu49_rgb_layout(width, height, &stride, &resource_height, &size);
++	if (ret)
++		return ret;
++	rc.target = PIPE_TEXTURE_2D;
++	rc.format = translate_format(format);
++	/* 2D host rows use resource width, not an independently padded stride. */
++	rc.width = stride / 4;
++	rc.height = resource_height;
++	rc.stride = stride;
++	rc.size = size;
++	rc.depth = rc.array_size = 1;
++	if (drmIoctl(bo->drv->fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &rc))
++		return -errno;
++	bo->meta.num_planes = 1;
++	bo->meta.strides[0] = stride;
++	bo->meta.offsets[0] = 0;
++	bo->meta.sizes[0] = bo->meta.total_size = size;
++	bo->handles[0].u32 = rc.bo_handle;
++	return 0;
++}
++#endif
++
+ static int virtio_dumb_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
+ 				 uint64_t use_flags)
+ {
+@@ -585,6 +621,15 @@
+ 
+ 	virtio_gpu_init_features_and_caps(drv);
+ 
++#ifdef MINIGBM_QEMU49_RENDER_2D
++	if (!features[feat_3d].enabled) {
++		const uint32_t rgb[] = { DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888,
++			DRM_FORMAT_XRGB8888, DRM_FORMAT_XBGR8888 };
++		virtio_gpu_add_combinations(drv, rgb, ARRAY_SIZE(rgb), &LINEAR_METADATA,
++			BO_USE_SW_MASK | BO_USE_TEXTURE | BO_USE_SCANOUT | BO_USE_LINEAR);
++		return 0; /* No protected, multiplanar or GPU-rendering allocations. */
++	}
++#endif
+ 	if (features[feat_3d].enabled) {
+ 		/* This doesn't mean host can scanout everything, it just means host
+ 		 * hypervisor can show it. */
+@@ -653,24 +698,37 @@
+ {
+ 	if (features[feat_3d].enabled)
+ 		return virtio_virgl_bo_create(bo, width, height, format, use_flags);
+-	else
++	else {
++#ifdef MINIGBM_QEMU49_RENDER_2D
++		return qemu49_rgb_create(bo, width, height, format);
++#else
+ 		return virtio_dumb_bo_create(bo, width, height, format, use_flags);
++#endif
++	}
+ }
+ 
+ static int virtio_gpu_bo_destroy(struct bo *bo)
+ {
++#ifdef MINIGBM_QEMU49_RENDER_2D
++	return drv_gem_bo_destroy(bo);
++#else
+ 	if (features[feat_3d].enabled)
+ 		return drv_gem_bo_destroy(bo);
+ 	else
+ 		return drv_dumb_bo_destroy(bo);
++#endif
+ }
+ 
+ static void *virtio_gpu_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
+ {
++#ifdef MINIGBM_QEMU49_RENDER_2D
++	return virtio_virgl_bo_map(bo, vma, plane, map_flags);
++#else
+ 	if (features[feat_3d].enabled)
+ 		return virtio_virgl_bo_map(bo, vma, plane, map_flags);
+ 	else
+ 		return drv_dumb_bo_map(bo, vma, plane, map_flags);
++#endif
+ }
+ 
+ static int virtio_gpu_bo_invalidate(struct bo *bo, struct mapping *mapping)
+@@ -755,8 +813,24 @@
+ 	struct virtio_transfers_params xfer_params;
+ 	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)bo->drv->priv;
+ 
++#ifdef MINIGBM_QEMU49_RENDER_2D
++	if (!features[feat_3d].enabled) {
++		if (!(mapping->vma->map_flags & BO_MAP_WRITE))
++			return 0;
++		memset(&xfer, 0, sizeof(xfer));
++		xfer.bo_handle = mapping->vma->handle;
++		xfer.box.w = bo->meta.width;
++		xfer.box.h = bo->meta.height;
++		xfer.box.d = 1;
++		if (drmIoctl(bo->drv->fd, DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, &xfer))
++			return -errno;
++		/* The composer must still flush/commit the scanout resource. */
++		return 0;
++	}
++#else
+ 	if (!features[feat_3d].enabled)
+ 		return 0;
++#endif
+ 
+ 	if (!(mapping->vma->map_flags & BO_MAP_WRITE))
+ 		return 0;

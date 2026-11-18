@@ -1,0 +1,58 @@
+name: Samsung 4.9 isolated minigbm callback gate
+on:
+  push:
+    branches: [test/samsung49-minigbm-callback]
+    paths:
+      - ci/minigbm-gate/**
+      - .github/workflows/samsung49-minigbm-gate.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  callback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Tools and verified reference kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cpio qemu-system-arm gcc-aarch64-linux-gnu python3-pil android-sdk-libsparse-utils
+          gh run download 44299096977 --name samsung49-drm-buffer-44299096977 --dir reference
+          echo '6ed2c548d50a2e2a741b48b3522ec00673fa55ad4859fe4a2511bd800ce51e37  reference/samsung-virt-evidence/Image' | sha256sum -c -
+          mkdir -p minigbm-evidence
+          cp reference/samsung-virt-evidence/config.final minigbm-evidence/kernel.config
+      - name: Strict layout and sanitizer checks
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror ci/minigbm-gate/test-layout.c -o /tmp/layout-test
+          /tmp/layout-test | tee minigbm-evidence/layout-test.log
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined ci/minigbm-gate/test-layout.c -o /tmp/layout-sanitized
+          /tmp/layout-sanitized | tee minigbm-evidence/layout-sanitized.log
+      - name: Build pinned Android module and callback fixture
+        run: bash ci/minigbm-gate/build.sh "$GITHUB_WORKSPACE/minigbm-work" 2>&1 | tee minigbm-evidence/build.log
+      - name: Boot actual callbacks under Samsung kernel
+        run: |
+          root="$GITHUB_WORKSPACE/minigbm-work/guest"
+          mkdir -p "$root"/{proc,sys,dev,data}
+          aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -Werror -O2 -static ci/minigbm-gate/init.c -o "$root/init"
+          sudo mknod "$root/dev/console" c 5 1
+          chmod +x "$root/system/bin/linker64" "$root/system/bin/gralloc-gate"
+          (cd "$root" && find . -print0 | cpio --null -o -H newc 2>/dev/null) > minigbm-evidence/initramfs.cpio
+          /usr/bin/python3 ci/minigbm-gate/run.py reference/samsung-virt-evidence/Image minigbm-evidence/initramfs.cpio minigbm-evidence | tee minigbm-evidence/runtime.log
+      - name: Record metadata
+        if: always()
+        run: |
+          for name in sources.txt compiler.txt guest-SHA256SUMS module-elf.txt probe-elf.txt; do
+            if test -f "minigbm-work/$name"; then cp "minigbm-work/$name" minigbm-evidence/; fi
+          done
+          (cd minigbm-evidence && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > minigbm-evidence/SHA256SUMS
+      - name: Preserve complete experiment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: samsung49-minigbm-${{ github.run_id }}
+          path: minigbm-evidence/
