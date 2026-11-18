@@ -14,7 +14,8 @@ cc="$PWD/.android-sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin
 "$cc" --version > "$out/hidl-compiler.txt"
 "$cc" -std=c++17 -nostdinc++ -isystem "$vndk/arm64/include/external/libcxx/include" \
  -Wall -Wextra -Werror -O2 "${incs[@]}" ci/hidl-baseline/client.cpp \
- -nostdlib++ -L "$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux \
+ -nostdlib++ -fuse-ld=lld -L "$out/guest/system/lib64" \
+ -Wl,-rpath-link,"$out/guest/system/lib64" -lhidlbase -lutils -lcutils -llog -lc++ -lselinux \
  -Wl,--dynamic-linker=/system/bin/linker64 -o "$out/guest/system/bin/hidl-client"
 readelf -d "$out/guest/system/bin/hidl-client" > "$out/hidl-client-elf.txt"
 for lib in $(readelf -d "$out/guest/system/bin/hidl-client" | awk -F'[][]' '/Shared library:/ {print $2}'); do
