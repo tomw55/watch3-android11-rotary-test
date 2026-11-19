@@ -1,0 +1,47 @@
+name: Watch3 display ABI host fixture
+
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - 'ci/watch3-display/**'
+      - '.github/workflows/watch3-display-host.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install small ARM64 cross compiler (no kernel or AOSP build)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+      - name: Run strict host, sanitizer, mutation and ARM64 compilation checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p display-host-evidence
+          aarch64-linux-gnu-gcc --version | tee display-host-evidence/cross-toolchain.txt
+          python3 ci/watch3-display/run-tests.py --cross-cc aarch64-linux-gnu-gcc 2>&1 | tee display-host-evidence/host-tests.log
+      - name: Preserve fixture and evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p display-host-evidence
+          cp ci/watch3-display/SOURCE_SHA256SUMS display-host-evidence/
+          cp ci/watch3-display/abi/provenance.json display-host-evidence/
+          git rev-parse HEAD > display-host-evidence/commit.txt
+          sha256sum display-host-evidence/* > display-host-evidence.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: watch3-display-host-${{ github.run_id }}
+          path: |
+            display-host-evidence/
+            display-host-evidence.sha256
+          if-no-files-found: error

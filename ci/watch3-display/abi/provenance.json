@@ -1,0 +1,79 @@
+{
+  "abi_declarations": [
+    {
+      "line": 272,
+      "name": "enum decon_idma_type"
+    },
+    {
+      "line": 375,
+      "name": "enum decon_pixel_format"
+    },
+    {
+      "line": 434,
+      "name": "enum decon_blending"
+    },
+    {
+      "line": 441,
+      "name": "enum dpp_rotate"
+    },
+    {
+      "line": 452,
+      "name": "enum dpp_csc_eq"
+    },
+    {
+      "line": 465,
+      "name": "enum dpp_comp_src"
+    },
+    {
+      "line": 471,
+      "name": "enum dpp_hdr_standard"
+    },
+    {
+      "line": 527,
+      "name": "struct decon_win_rect"
+    },
+    {
+      "line": 541,
+      "name": "struct dpp_params"
+    },
+    {
+      "line": 551,
+      "name": "struct decon_frame"
+    },
+    {
+      "line": 560,
+      "name": "struct decon_win_config"
+    },
+    {
+      "line": 625,
+      "name": "struct decon_win_config_data"
+    }
+  ],
+  "all_kconfig_sync_definitions": {
+    "DRM_DMA_SYNC": [
+      {
+        "line": 108,
+        "path": "drivers/gpu/drm/Kconfig"
+      }
+    ],
+    "SYNC": [],
+    "SYNC_FILE": [
+      {
+        "line": 2,
+        "path": "drivers/dma-buf/Kconfig"
+      }
+    ]
+  },
+  "archive_sha256": "1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f",
+  "assumptions": [
+    "LP64 ARM64; 64-bit dma_addr_t; normal enum width; no packing",
+    "This fixture is not a complete kernel or graphics HAL"
+  ],
+  "source_sha256": {
+    "arch/arm64/configs/tizen_noblesse_defconfig": "df517a69a19109107101dfcfd7ae690cd36c24ac0486fc22ff88690372b2fce6",
+    "drivers/video/fbdev/exynos/dpu_9110/decon.h": "1c3f1c07f3af9362955085506585f0c6bc2b82da0d1e1c620f2d3e78b65090ae",
+    "drivers/video/fbdev/exynos/dpu_9110/decon_core.c": "0f19ec0bf5440c162a9f97b343fbab7fe0af5baa9a97de9d7f6ca8b3d021c1ff",
+    "drivers/video/fbdev/exynos/dpu_9110/helper.c": "a7b64669752f8422191b97fcca7e9e2722875544f0873b3b1e2417eebc718337"
+  },
+  "sync_contract": "CONFIG_SYNC guards Android fences; CONFIG_SYNC_FILE alone is insufficient"
+}
