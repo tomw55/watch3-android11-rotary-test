@@ -210,6 +210,7 @@ static void test_duplicates(void)
 static void test_cpu_complete(void)
 {
     struct fake m; struct w3_frame f; setup(&m, &f); struct w3_ops ops = ops_for(&m);
+    memset(&f, 0, sizeof(f)); /* Regression: zero initialization must not invent acquire FD 0. */
     struct w3_buffer b = buffer(); b.cpu_complete = true; b.borrowed_acquire = -1;
     assert(w3_prepare(&f, &b, W3_SYNC_RETIRE_ONLY, &ops) == 0);
     assert(f.request.config[0].acq_fence == -1 && m.dup_calls == 1);

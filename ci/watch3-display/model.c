@@ -61,6 +61,7 @@ int w3_prepare(struct w3_frame *f, const struct w3_buffer *b,
     if (size > b->allocation_bytes) return -ENOSPC;
     if (w3_translate_format(b->format, &fmt)) return -ENOTSUP;
 
+    f->acquire_fd = f->retire_fd = -1; /* Also support an initially zeroed frame. */
     memset(&f->request, 0, sizeof(f->request));
     f->request.retire_fence = f->request.fd_odma = -1;
     for (size_t i = 0; i < MAX_DECON_WIN + 1u; ++i) {

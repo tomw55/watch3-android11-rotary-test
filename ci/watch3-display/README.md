@@ -23,6 +23,7 @@ python3 ci/watch3-display/run-tests.py
 python3 ci/watch3-display/run-tests.py --archive /actual/path/kernel_samsung_galileo-master.zip
 
 # Optional: actual ARM64 object compilation (not ARM64 execution).
+# Ubuntu/Mint prerequisite: gcc-aarch64-linux-gnu AND libc6-dev-arm64-cross.
 python3 ci/watch3-display/run-tests.py --cross-cc aarch64-linux-gnu-gcc
 ```
 
@@ -103,6 +104,8 @@ and test the Tizen-versus-Android synchronization path separately.
 
 - Input buffer/acquire descriptors are borrowed; the model duplicates them
   and never closes the originals. Failed duplication unwinds once.
+- An empty frame may be initialized with `w3_init()` or zero initialization;
+  preparation explicitly sets absent acquire/retire descriptors to -1.
 - Only the backend supplies the owned retire descriptor. The model accepts
   FD zero and rejects a returned FD that aliases its owned input descriptors.
 - An ioctl-like error may happen after work was queued (for example copy-out
