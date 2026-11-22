@@ -179,7 +179,7 @@ rc=0
 timeout 100 qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a57 \
     -accel tcg -smp 2 -m 1024 -nodefaults -display none -monitor none \
     -serial stdio -no-reboot -kernel "$out/Image" -initrd "$out/initramfs.cpio" \
-    -append 'console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' > "$out/serial.log" 2>&1 || rc=$?
+    -append 'earlycon=pl011,0x09000000 console=ttyAMA0 rdinit=/init rootfstype=ramfs ignore_loglevel audit=1 panic=1' > "$out/serial.log" 2>&1 || rc=$?
 printf '%d\n' "$rc" > "$out/qemu-exit.txt"
 cat "$out/serial.log"
 if [[ -n ${SERVICEMANAGER_GUEST_TAR:-} ]]; then
