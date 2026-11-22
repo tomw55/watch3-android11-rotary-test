@@ -1,0 +1,519 @@
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
+@@ -10,3 +10,12 @@
+ 	default n
+ 	help
+ 	  If this menu is enabled, you can control CABC mode of panel.
++
++config EXYNOS_NOBLESSE_PANEL_REVIEW
++	bool "Compile isolated Noblesse panel adaptation helpers"
++	depends on EXYNOS_COMMON_PANEL
++	default n
++	help
++	  Build source-reviewed panel command helpers and named GPIO parsing.
++	  This does not register either panel or provide calibration/brightness.
++	  Keep disabled for every physical hardware build pending review.
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Makefile
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Makefile
+@@ -1 +1,2 @@
+ obj-$(CONFIG_EXYNOS_COMMON_PANEL) += exynos_panel_drv.o panel-boe-wf012fbm.o panel-auo-hb120blx01.o
++obj-$(CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW) += noblesse-panel-seq.o noblesse-panel-transport.o
+--- a/drivers/video/fbdev/exynos/dpu30/panels/exynos_panel_drv.c
++++ b/drivers/video/fbdev/exynos/dpu30/panels/exynos_panel_drv.c
+@@ -21,6 +21,9 @@
+ 
+ //#include "panel_i2c.h"
+ #include "exynos_panel_drv.h"
++#ifdef CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW
++#include "noblesse-panel-gpios.h"
++#endif
+ 
+ int dpu_panel_log_level = 7;
+ 
+@@ -113,6 +116,14 @@
+ 	struct exynos_panel_resources *res = &panel->res;
+ 
+ 	DPU_INFO_PANEL("%s +\n", __func__);
++
++	if (of_property_read_bool(n, "samsung,noblesse-r08-panel")) {
++#ifdef CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW
++		return noblesse_parse_named_gpios(panel);
++#else
++		return -EOPNOTSUPP;
++#endif
++	}
+ 
+ 	if (of_get_property(n, "gpios", NULL) != NULL)  {
+ 		/* panel reset */
+@@ -207,6 +218,10 @@
+ {
+ 	int val;
+ 	struct exynos_panel_resources *res = &panel->res;
++#ifdef CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW
++	if (of_property_read_bool(panel->dev->of_node, "samsung,noblesse-r08-panel"))
++		return true; /* Watch3 has no display routing mux. */
++#endif
+ 	val = gpio_get_value(res->mux_select);
+ 	if (val == 0) {
+ 		pr_info("Display MUX select state = 0, forcing to 1\n");
+@@ -236,10 +251,24 @@
+ 		return -EINVAL;
+ 	}
+ 
+-	usleep_range(10000, 11000);
+-	gpio_set_value(res->lcd_reset, 0);
+-	usleep_range(3000, 4000);
+-	gpio_set_value(res->lcd_reset, 1);
++#ifdef CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW
++	if (of_property_read_bool(panel->dev->of_node, "samsung,noblesse-r08-panel")) {
++		/* Exact stock dsim_reset_panel timing; no new power policy. */
++		usleep_range(5000, 6000);
++		gpio_set_value(res->lcd_reset, 0);
++		usleep_range(5000, 6000);
++		gpio_set_value(res->lcd_reset, 1);
++		usleep_range(10000, 11000);
++		gpio_free(res->lcd_reset);
++		return 0;
++	} else
++#endif
++	{
++		usleep_range(10000, 11000);
++		gpio_set_value(res->lcd_reset, 0);
++		usleep_range(3000, 4000);
++		gpio_set_value(res->lcd_reset, 1);
++	}
+ 
+ 	gpio_free(res->lcd_reset);
+ 
+--- a/drivers/video/fbdev/exynos/dpu30/panels/exynos_panel_drv.h
++++ b/drivers/video/fbdev/exynos/dpu30/panels/exynos_panel_drv.h
+@@ -57,6 +57,10 @@
+ struct exynos_panel_resources {
+ 	int lcd_reset;
+ 	int lcd_power[2];
++#ifdef CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW
++	int ub_detect; /* Noblesse input, never a power GPIO */
++	int err_fg; /* Noblesse input, never a power GPIO */
++#endif
+ 	int mux_select;
+ 	int mux_output_enable;
+ 	struct regulator *regulator[MAX_REGULATORS];
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-panel-gpios.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Included only by exynos_panel_drv.c with the default-off review option. */
++static int noblesse_parse_named_gpios(struct exynos_panel_device *panel)
++{
++	struct device *dev = panel->dev;
++	struct device_node *n = dev->of_node;
++	struct exynos_panel_resources *res = &panel->res;
++	int reset, ub, error, ret;
++	res->lcd_reset = -1;
++	res->lcd_power[0] = -1;
++	res->lcd_power[1] = -1;
++	res->mux_select = -1;
++	res->mux_output_enable = -1;
++	res->ub_detect = -1;
++	res->err_fg = -1;
++	/* Reject an ambiguous mixture rather than reusing positional power GPIOs. */
++	if (of_get_property(n, "gpios", NULL))
++		return -EINVAL;
++	reset = of_get_named_gpio(n, "reset-gpios", 0);
++	if (reset < 0)
++		return reset;
++	ub = of_get_named_gpio(n, "ub-detect-gpios", 0);
++	if (ub < 0)
++		return ub;
++	error = of_get_named_gpio(n, "error-gpios", 0);
++	if (error < 0)
++		return error;
++	if (reset == ub || reset == error || ub == error)
++		return -EINVAL;
++	/* Reset is resolved only; existing reset logic must be separately reviewed.
++	 * The two detection lines can only be requested as inputs here. */
++	ret = devm_gpio_request_one(dev, ub, GPIOF_IN, "noblesse-ub-detect");
++	if (ret)
++		return ret;
++	ret = devm_gpio_request_one(dev, error, GPIOF_IN, "noblesse-error");
++	if (ret)
++		return ret;
++	res->lcd_reset = reset;
++	res->ub_detect = ub;
++	res->err_fg = error;
++	return 0;
++}
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-panel-seq.c
+@@ -0,0 +1,119 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Adapted from Samsung's Noblesse panel control functions; see provenance. */
++#include "noblesse-panel-seq.h"
++#ifdef __KERNEL__
++#include <linux/errno.h>
++#else
++#include <errno.h>
++#endif
++#include "noblesse-panel-tables.h"
++#define NP_COUNT(a) (sizeof(a) / sizeof((a)[0]))
++
++static int validate(enum np_action action, const struct np_config *c,
++		    const struct np_io *io)
++{
++	if (!c || !io || !io->write || !io->delay_ms)
++		return -EINVAL;
++	if (!c->identity_verified || (c->variant != NP_SDC && c->variant != NP_BOE))
++		return -ENODEV;
++	if (action < NP_INIT || action > NP_SUSPEND)
++		return -EINVAL;
++	/* Neither optional debug nor factory fast-discharge sequence is ported. */
++	if (c->ddi_debug || c->fast_discharge)
++		return -EOPNOTSUPP;
++	if (action == NP_INIT && c->variant == NP_SDC) {
++		if (!c->cal.ready)
++			return -ENODATA;
++		if (c->cal.gamma[0] != 0xca || c->cal.aid[0] != 0xb1 ||
++		    c->cal.elvss[0] != 0xb5 || c->cal.vbias[0] != 0xba)
++			return -EINVAL;
++	}
++	return 0;
++}
++
++static int send(const struct np_io *io, enum np_packet type,
++		const np_u8 *data, size_t count)
++{
++	int ret = io->write(io->cookie, type, data, count);
++	return ret < 0 ? ret : 0;
++}
++
++int np_run(enum np_action action, const struct np_config *c, const struct np_io *io)
++{
++	int ret, cleanup;
++	ret = validate(action, c, io);
++	if (ret)
++		return ret;
++#define SEND(type, data, count) do { \
++	ret = send(io, type, data, count); if (ret) goto finish; \
++} while (0)
++#define LONG(data) SEND(NP_LONG, data, NP_COUNT(data))
++	if (c->variant == NP_SDC) {
++		/* On a failed unlock, acceptance is unknown: attempt key-off as well. */
++		LONG(TEST_KEY_ON_0);
++		if (action == NP_INIT) {
++			SEND(NP_SHORT, SLPOUT, 1);
++			io->delay_ms(io->cookie, 20);
++			LONG(TEON);
++			LONG(c->cal.gamma);
++			LONG(c->cal.aid);
++			LONG(c->cal.elvss);
++			LONG(F4_GPARA);
++			if ((c->id3 & 0x0f) >= 4)
++				SEND(NP_SHORT_PARAM, NORMAL_VINT, 2);
++			else
++				SEND(NP_SHORT_PARAM, NORMAL_VINT_OLD, 2);
++			LONG(c->cal.vbias);
++			SEND(NP_SHORT_PARAM, GAMMA_UPDATE, 2);
++			LONG(FFC_ON);
++			if (c->circle_mask)
++				LONG(CIRCLE_MASK_ON);
++			else
++				LONG(CIRCLE_MASK_OFF);
++		} else if (action == NP_DISPLAY_ON) {
++			SEND(NP_SHORT, DISPLAY_ON, 1);
++		} else {
++			SEND(NP_SHORT, DISPLAY_OFF, 1);
++			SEND(NP_SHORT, SLEEP_IN, 1);
++			io->delay_ms(io->cookie, 120);
++		}
++	} else {
++		if (action == NP_INIT) {
++			LONG(RM69091_USER_CMD);
++			LONG(RM69091_TE_ON);
++			if (c->id3 >= 0x81) {
++				LONG(RM69091_MANUFACTURE_01);
++				LONG(RM69091_IDLE_EXT_POWER);
++			}
++			LONG(RM69091_USER_CMD);
++			LONG(RM69091_DISPLAY_CTRL);
++			LONG(RM69091_COLUMN_SET);
++			LONG(RM69091_ROW_SET);
++			LONG(RM69091_DISP_BRIGHTNESS);
++			LONG(RM69091_SLEEP_OUT);
++			if (!c->curve) {
++				LONG(RM69091_MANUFACTURE_0C);
++				LONG(RM69091_DISABLE_CURVE);
++			}
++			io->delay_ms(io->cookie, 50);
++		} else if (action == NP_DISPLAY_ON) {
++			LONG(RM69091_DISP_ON);
++		} else {
++			LONG(RM69091_DISP_OFF);
++			LONG(RM69091_SLEEP_IN);
++			io->delay_ms(io->cookie, 83);
++		}
++	}
++	ret = 0;
++finish:
++	/* Preserve the first transport error if the best-effort key-off also fails.
++	 * BOE has no guessed bank/power recovery sequence. No automatic retry. */
++	if (c->variant == NP_SDC) {
++		cleanup = send(io, NP_LONG, TEST_KEY_OFF_0, NP_COUNT(TEST_KEY_OFF_0));
++		if (!ret)
++			ret = cleanup;
++	}
++#undef LONG
++#undef SEND
++	return ret;
++}
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-panel-seq.h
+@@ -0,0 +1,46 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef NOBLESSE_PANEL_SEQ_H
++#define NOBLESSE_PANEL_SEQ_H
++#ifdef __KERNEL__
++#include <linux/types.h>
++typedef u8 np_u8;
++#else
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++typedef uint8_t np_u8;
++#endif
++
++enum np_variant { NP_UNCONFIRMED, NP_SDC, NP_BOE };
++enum np_action { NP_INIT, NP_DISPLAY_ON, NP_SUSPEND };
++enum np_packet { NP_SHORT = 0x05, NP_SHORT_PARAM = 0x15, NP_LONG = 0x39 };
++
++/* Caller-provided, per-panel values prepared by the dimming/calibration code.
++ * No default calibration and no calibration reader are supplied by this core. */
++struct np_sdc_cal {
++	bool ready;
++	np_u8 gamma[35], aid[3], elvss[4], vbias[9];
++};
++struct np_config {
++	enum np_variant variant;
++	bool identity_verified;
++	np_u8 id3; /* Full ID byte: SDC uses its low nibble; BOE uses all 8 bits. */
++	bool circle_mask, curve;
++	bool ddi_debug, fast_discharge;
++	struct np_sdc_cal cal;
++};
++struct np_io {
++	void *cookie;
++	int (*write)(void *, enum np_packet, const np_u8 *, size_t);
++	void (*delay_ms)(void *, unsigned int);
++};
++/* Normal-mode control-sequence helper, not a platform driver or panel probe.
++ * Power/reset/DSIM readiness, operation order, identity and calibration must
++ * be established by a future caller. Negative errors never mean panel rollback. */
++int np_run(enum np_action, const struct np_config *, const struct np_io *);
++#ifdef __KERNEL__
++struct exynos_panel_device;
++int noblesse_panel_sequence(struct exynos_panel_device *, enum np_action,
++			    const struct np_config *);
++#endif
++#endif
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-panel-tables.h
+@@ -0,0 +1,150 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Exact Samsung arrays; generated, do not edit. */
++
++static const unsigned char TEST_KEY_ON_0[] = {
++	0xF0,
++	0x5A, 0x5A,
++};
++
++static const unsigned char TEST_KEY_OFF_0[] = {
++	0xF0,
++	0xA5, 0xA5,
++};
++
++static const unsigned char SLPOUT[] = {
++	0x11,
++	0x00, 0x00,
++};
++
++static const unsigned char TEON[] = {
++	0x35,
++	0x00, 0x00,
++};
++
++static const unsigned char F4_GPARA[] = {
++	0xB0,
++	0x04, 0xF4
++};
++
++static const unsigned char NORMAL_VINT[] = {
++	0xF4,
++	0x0C, 0x00
++};
++
++static const unsigned char NORMAL_VINT_OLD[] = {
++	0xF4,
++	0x14, 0x00
++};
++
++static const unsigned char GAMMA_UPDATE[] = {
++	0xF7,
++	0x03, 0x00,
++};
++
++static const unsigned char FFC_ON[] = {
++	0xC5,
++	0x09, 0x50, 0x80, 0x35,
++	0x55, 0x05, 0x00
++};
++
++static const unsigned char CIRCLE_MASK_ON[] = {
++	0x7C,
++	0x01, 0x00, 0xB3, 0x00,
++	0xB3, 0x00, 0xB3, 0x00,
++	0x00, 0x00, 0x01, 0x00,
++	0x00
++};
++
++static const unsigned char CIRCLE_MASK_OFF[] = {
++	0x7C,
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++	0x00
++};
++
++static const unsigned char DISPLAY_ON[] = {
++	0x29,
++	0x00, 0x00,
++};
++
++static const unsigned char DISPLAY_OFF[] = {
++	0x28,
++	0x00, 0x00,
++};
++
++static const unsigned char SLEEP_IN[] = {
++	0x10,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_USER_CMD[] = {
++	0xfe,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_TE_ON[] = {
++	0x35,
++	0x02, 0x00,
++};
++
++static const unsigned char RM69091_MANUFACTURE_01[] = {
++	0xfe,
++	0x01, 0x00,
++};
++
++static const unsigned char RM69091_IDLE_EXT_POWER[] = {
++	0x66,
++	0x40, 0x00,
++};
++
++static const unsigned char RM69091_DISPLAY_CTRL[] = {
++	0x53,
++	0x20, 0x00,
++};
++
++static const unsigned char RM69091_COLUMN_SET[] = {
++	0x2a,
++	0x00, 0x00, 0x01, 0x67,
++};
++
++static const unsigned char RM69091_ROW_SET[] = {
++	0x2b,
++	0x00, 0x00, 0x01, 0x67,
++};
++
++static const unsigned char RM69091_DISP_BRIGHTNESS[] = {
++	0x51,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_SLEEP_OUT[] = {
++	0x11,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_MANUFACTURE_0C[] = {
++	0xfe,
++	0x0c, 0x00,
++};
++
++static const unsigned char RM69091_DISABLE_CURVE[] = {
++	0x36,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_DISP_ON[] = {
++	0x29,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_DISP_OFF[] = {
++	0x28,
++	0x00, 0x00,
++};
++
++static const unsigned char RM69091_SLEEP_IN[] = {
++	0x10,
++	0x00, 0x00,
++};
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-panel-transport.c
+@@ -0,0 +1,47 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#include <linux/delay.h>
++#include "exynos_panel_drv.h"
++#include "noblesse-panel-seq.h"
++
++static int noblesse_write(void *cookie, enum np_packet type,
++			  const np_u8 *bytes, size_t count)
++{
++	struct dsim_device *dsim = cookie;
++	/* Keep original packet type, including three-byte BOE long writes. */
++	if (type == NP_SHORT && count == 1)
++		return dsim_write_data(dsim, type, bytes[0], 0, true);
++	if (type == NP_SHORT_PARAM && count == 2)
++		return dsim_write_data(dsim, type, bytes[0], bytes[1], true);
++	if (type == NP_LONG && count >= 1 && count <= 35)
++		return dsim_write_data(dsim, type, (unsigned long)bytes, (u32)count, true);
++	return -EINVAL;
++}
++
++static void noblesse_delay(void *cookie, unsigned int duration)
++{
++	(void)cookie;
++	msleep(duration);
++}
++
++/* No panel_ops registration: IDs, calibration provider, brightness and power
++ * sequencing are deliberately not fabricated. Future caller must use this
++ * only after regulators, reset and DSIM have been independently validated. */
++int noblesse_panel_sequence(struct exynos_panel_device *panel, enum np_action action,
++			    const struct np_config *config)
++{
++	struct np_io io;
++	struct dsim_device *dsim;
++	int ret;
++	if (!panel || !config)
++		return -EINVAL;
++	dsim = get_dsim_drvdata(panel->id);
++	if (!dsim)
++		return -ENODEV;
++	io.cookie = dsim;
++	io.write = noblesse_write;
++	io.delay_ms = noblesse_delay;
++	mutex_lock(&panel->ops_lock);
++	ret = np_run(action, config, &io);
++	mutex_unlock(&panel->ops_lock);
++	return ret;
++}
