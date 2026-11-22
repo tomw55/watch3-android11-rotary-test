@@ -1,0 +1,22 @@
+--- a/drivers/video/fbdev/exynos/dpu30/decon.h
++++ b/drivers/video/fbdev/exynos/dpu30/decon.h
+@@ -1536,7 +1536,6 @@
+ 		struct decon_reg_data *regs);
+ 
+ /* display LCD on/off notifier */
+-static ATOMIC_NOTIFIER_HEAD(lcd_status_notifier_list);
+ 
+ int register_lcd_status_notifier(struct notifier_block *nb);
+ int unregister_lcd_status_notifier(struct notifier_block *nb);
+--- a/drivers/video/fbdev/exynos/dpu30/helper.c
++++ b/drivers/video/fbdev/exynos/dpu30/helper.c
+@@ -374,6 +374,9 @@
+ }
+ #endif
+ 
++/* Private notifier chain: its only users are below in this file. */
++static ATOMIC_NOTIFIER_HEAD(lcd_status_notifier_list);
++
+ int register_lcd_status_notifier(struct notifier_block *nb)
+ {
+ 	return atomic_notifier_chain_register(&lcd_status_notifier_list, nb);

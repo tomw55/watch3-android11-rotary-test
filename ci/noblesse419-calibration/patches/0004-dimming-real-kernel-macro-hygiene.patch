@@ -1,0 +1,50 @@
+--- a/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming.c
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming.c
+@@ -15,8 +15,10 @@
+ #define ND_ALLOC(n) calloc(1, n)
+ #define ND_FREE(p) free(p)
+ #endif
++#ifndef __KERNEL__
+ #define pr_err(...) ((void)0)
+ #define printk(...) ((void)0)
++#endif
+ #include "noblesse-dimming-internal.h"
+ #include "noblesse-dimming-tables.inc"
+ #include "noblesse-dimming-math.inc"
+@@ -141,24 +143,24 @@
+ 	    f->cal.aid[0] != 0xb1 || f->cal.elvss[0] != 0xb5 ||
+ 	    f->cal.vbias[0] != 0xba || f->has_vint != ((f->id3 & 15) >= 3) ||
+ 	    (f->has_vint && f->vint[0] != 0xf4)) return -EINVAL;
+-#define WRITE(type, bytes, n) do { \
++#define ND_TX_WRITE(type, bytes, n) do { \
+ 	ret = io->write(io->cookie, type, bytes, n); if (ret < 0) goto finish; \
+ } while (0)
+-#define LONG(bytes) WRITE(NP_LONG, bytes, sizeof(bytes))
+-	LONG(TEST_KEY_ON_0);
+-	LONG(f->cal.gamma);
+-	LONG(f->cal.aid);
+-	LONG(f->cal.elvss);
++#define ND_TX_LONG(bytes) ND_TX_WRITE(NP_LONG, bytes, sizeof(bytes))
++	ND_TX_LONG(TEST_KEY_ON_0);
++	ND_TX_LONG(f->cal.gamma);
++	ND_TX_LONG(f->cal.aid);
++	ND_TX_LONG(f->cal.elvss);
+ 	if (f->has_vint) {
+-		LONG(F4_GPARA);
+-		WRITE(NP_SHORT_PARAM, f->vint, 2);
++		ND_TX_LONG(F4_GPARA);
++		ND_TX_WRITE(NP_SHORT_PARAM, f->vint, 2);
+ 	}
+-	LONG(f->cal.vbias);
+-	WRITE(NP_SHORT_PARAM, PANEL_UPDATE, 2);
++	ND_TX_LONG(f->cal.vbias);
++	ND_TX_WRITE(NP_SHORT_PARAM, PANEL_UPDATE, 2);
+ 	ret = 0;
+ finish:
+ 	cleanup = io->write(io->cookie, NP_LONG, TEST_KEY_OFF_0, sizeof(TEST_KEY_OFF_0));
+ 	return ret < 0 ? ret : (cleanup < 0 ? cleanup : 0);
+-#undef LONG
+-#undef WRITE
++#undef ND_TX_LONG
++#undef ND_TX_WRITE
+ }

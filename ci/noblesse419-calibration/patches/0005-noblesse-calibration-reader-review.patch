@@ -1,0 +1,192 @@
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
+@@ -28,3 +28,12 @@
+ 	  Source-derived per-instance gamma math and normal-brightness packets.
+ 	  No probe, calibration reader, backlight or panel registration is supplied.
+ 	  Keep disabled for physical builds pending independent integration review.
++
++config EXYNOS_NOBLESSE_CALIBRATION_REVIEW
++	bool "Compile isolated Noblesse calibration-reader review helper"
++	depends on EXYNOS_NOBLESSE_DIMMING_REVIEW
++	default n
++	help
++	  Bounded-callback read/validation logic and compile-only DSIM API checks.
++	  No DSIM backend, panel registration or automatic I/O caller is supplied.
++	  Legacy DSIM receive bounds and timeout recovery need separate review.
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Makefile
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Makefile
+@@ -1,3 +1,4 @@
+ obj-$(CONFIG_EXYNOS_COMMON_PANEL) += exynos_panel_drv.o panel-boe-wf012fbm.o panel-auo-hb120blx01.o
+ obj-$(CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW) += noblesse-panel-seq.o noblesse-panel-transport.o
+ obj-$(CONFIG_EXYNOS_NOBLESSE_DIMMING_REVIEW) += noblesse-dimming.o
++obj-$(CONFIG_EXYNOS_NOBLESSE_CALIBRATION_REVIEW) += noblesse-calibration.o noblesse-calibration-api-check.o
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-calibration-api-check.c
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Compile-only ABI assertions. No executable callback, no backend registration. */
++#include "exynos_panel_drv.h"
++typedef char nc_dcs_read_tag_matches[MIPI_DSI_DCS_READ == 0x06 ? 1 : -1];
++typedef int (*nc_expected_read)(struct dsim_device *, u32, u32, u32, u8 *);
++typedef int (*nc_expected_write)(struct dsim_device *, u32, unsigned long, u32, bool);
++typedef char nc_read_signature_matches[
++	__builtin_types_compatible_p(typeof(&dsim_read_data), nc_expected_read) ? 1 : -1];
++typedef char nc_write_signature_matches[
++	__builtin_types_compatible_p(typeof(&dsim_write_data), nc_expected_write) ? 1 : -1];
++/* Do NOT replace these type checks with assignment/dispatch to legacy read_data.
++ * Its receive bounds and timeout/recovery policy remain unresolved here. */
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-calibration.c
+@@ -0,0 +1,102 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Isolated SDC large-panel read/validation logic, no hardware backend. */
++#include "noblesse-calibration.h"
++#ifdef __KERNEL__
++#include <linux/errno.h>
++#include <linux/string.h>
++#else
++#include <errno.h>
++#include <string.h>
++#endif
++
++/* Exact normal read scope from Samsung Noblesse read_init_info(), not MTP sysfs. */
++static const np_u8 nc_key_on[] = {0xf0, 0x5a, 0x5a};
++static const np_u8 nc_key_off[] = {0xf0, 0xa5, 0xa5};
++
++static int nc_finish_status(struct nc_status *s, enum nc_stage stage, int error,
++			    int cleanup)
++{
++	if (s) {
++		s->failed_at = error ? stage : NC_NONE;
++		s->error = error;
++		s->cleanup_error = cleanup;
++	}
++	return error;
++}
++
++static int nc_exact(const struct nc_io *io, np_u8 reg, np_u8 *buf, size_t len)
++{
++	int ret = io->read(io->cookie, 0x06, reg, len, buf); /* DCS READ */
++	if (ret < 0) return ret;
++	return (size_t)ret == len ? 0 : -EMSGSIZE;
++}
++
++int nc_read_snapshot(const struct nc_requirements *r, const struct nc_io *io,
++		     struct nc_snapshot *out, struct nc_status *status)
++{
++	struct nc_snapshot local;
++	np_u8 vbias[8], mtp_date[46];
++	enum nc_stage stage = NC_ARGUMENTS;
++	int ret, cleanup;
++	if (status) memset(status, 0, sizeof(*status));
++	if (!out) return nc_finish_status(status, stage, -EINVAL, 0);
++	memset(out, 0, sizeof(*out));
++	if (!r || !io || !io->begin || !io->end || !io->read || !io->write)
++		return nc_finish_status(status, stage, -EINVAL, 0);
++	if (r->variant != NP_SDC || !r->large_panel_verified || r->expected_id[0] != 0x40)
++		return nc_finish_status(status, stage, -ENODEV, 0);
++	if (!r->transport_ready)
++		return nc_finish_status(status, stage, -EAGAIN, 0);
++	memset(&local, 0, sizeof(local));
++	memset(vbias, 0, sizeof(vbias));
++	memset(mtp_date, 0, sizeof(mtp_date));
++	ret = io->begin(io->cookie);
++	if (ret < 0) return nc_finish_status(status, NC_BEGIN, ret, 0);
++	/* Failed unlock may still have changed panel state: always attempt key-off. */
++	stage = NC_KEY_ON;
++	ret = io->write(io->cookie, NP_LONG, nc_key_on, sizeof(nc_key_on));
++	if (ret < 0) goto finish;
++	stage = NC_ID;
++	ret = nc_exact(io, 0x04, local.id, sizeof(local.id));
++	if (ret) goto finish;
++	stage = NC_ID_MATCH;
++	if (memcmp(local.id, r->expected_id, sizeof(local.id))) { ret = -ENODEV; goto finish; }
++	stage = NC_VBIAS;
++	ret = nc_exact(io, 0xba, vbias, sizeof(vbias));
++	if (ret) goto finish;
++	stage = NC_MTP;
++	ret = nc_exact(io, 0xc8, mtp_date, sizeof(mtp_date));
++	if (ret) goto finish;
++	local.base_vbias = vbias[7]; /* Stock BA eighth parameter. */
++	memcpy(local.mtp, mtp_date, sizeof(local.mtp)); /* Exact first 34 of 46. */
++finish:
++	cleanup = io->write(io->cookie, NP_LONG, nc_key_off, sizeof(nc_key_off));
++	if (cleanup >= 0) cleanup = 0;
++	if (!ret && cleanup) { ret = cleanup; stage = NC_KEY_OFF; }
++	io->end(io->cookie);
++	if (ret) return nc_finish_status(status, stage, ret, cleanup);
++	local.complete = true;
++	*out = local; /* Never publish a short, failed, mismatched or unlocked read. */
++	return nc_finish_status(status, NC_NONE, 0, 0);
++}
++
++int nc_read_create(const struct nc_requirements *r, const struct nc_io *io,
++		   struct nd_context **out, struct nc_status *status)
++{
++	struct nc_snapshot snap;
++	struct nd_input input;
++	int ret;
++	if (!out) return nc_finish_status(status, NC_ARGUMENTS, -EINVAL, 0);
++	*out = NULL;
++	ret = nc_read_snapshot(r, io, &snap, status);
++	if (ret) return ret;
++	memset(&input, 0, sizeof(input));
++	input.large_panel_verified = r->large_panel_verified;
++	input.id_read_ok = input.mtp_read_ok = input.vbias_read_ok = true;
++	memcpy(input.id, snap.id, sizeof(input.id));
++	input.base_vbias = snap.base_vbias;
++	input.mtp = snap.mtp;
++	input.mtp_len = sizeof(snap.mtp);
++	ret = nd_create(&input, out); /* nd_create retains no pointer to this stack. */
++	return nc_finish_status(status, NC_DIMMING, ret, 0);
++}
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-calibration.h
+@@ -0,0 +1,47 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef NOBLESSE_CALIBRATION_H
++#define NOBLESSE_CALIBRATION_H
++#include "noblesse-dimming.h"
++
++enum nc_stage {
++	NC_NONE, NC_ARGUMENTS, NC_BEGIN, NC_KEY_ON, NC_ID, NC_ID_MATCH,
++	NC_VBIAS, NC_MTP, NC_KEY_OFF, NC_DIMMING
++};
++struct nc_status {
++	enum nc_stage failed_at;
++	int error, cleanup_error;
++};
++struct nc_requirements {
++	enum np_variant variant;
++	bool large_panel_verified, transport_ready;
++	np_u8 expected_id[3]; /* Exact independently justified ID, not an ID guess. */
++};
++struct nc_snapshot {
++	bool complete; /* Exact reads completed; NOT electrical/calibration validity. */
++	np_u8 id[3], base_vbias, mtp[34];
++};
++struct nc_io {
++	void *cookie;
++	/* begin serializes the WHOLE transaction and rechecks transport readiness.
++	 * A failed begin must leave no lock held. end releases a successful begin. */
++	int (*begin)(void *);
++	void (*end)(void *);
++	int (*write)(void *, enum np_packet, const np_u8 *, size_t);
++	/* REQUIRED transport contract: never write beyond len, including when the
++	 * panel reports an oversized packet; return bytes read or a negative errno.
++	 * An adapter cannot enforce that memory bound after this callback returns.
++	 * Legacy dsim_read_data() DOES NOT establish this contract; no backend using
++	 * that function is supplied or authorized by this package. */
++	int (*read)(void *, unsigned int packet, np_u8 address, size_t len, np_u8 *);
++};
++
++/* No probe, DSIM backend or automatic caller. F0 key on/off are control writes,
++ * so this is NOT a write-free read operation. No brightness, firmware, factory
++ * calibration-programming or reset commands are emitted by this component. */
++int nc_read_snapshot(const struct nc_requirements *, const struct nc_io *,
++		     struct nc_snapshot *, struct nc_status *);
++/* Publish a real nd_context only after all exact reads AND key-off succeed.
++ * Caller must dispose of any previous context before supplying output storage. */
++int nc_read_create(const struct nc_requirements *, const struct nc_io *,
++		   struct nd_context **, struct nc_status *);
++#endif

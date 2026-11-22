@@ -1,0 +1,64 @@
+name: Noblesse 4.19 calibration reader (offline)
+
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - .github/workflows/noblesse419-calibration.yml
+      - ci/noblesse419-calibration/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: noblesse419-calibration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  calibration-reader:
+    if: github.ref == 'refs/heads/test/binder-android11-adaptation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential flex bison m4 bc libssl-dev
+      - name: Fetch exact 4.19 source and verified cross-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/panel-object-evidence" "$RUNNER_TEMP/exynos419"
+          git -C "$RUNNER_TEMP/exynos419" init -q
+          git -C "$RUNNER_TEMP/exynos419" remote add origin https://github.com/xanderlent/COMBINED_android-kernel-exynos.git
+          git -C "$RUNNER_TEMP/exynos419" fetch --no-progress --depth=1 origin 1c06f4ebe0a9788b9d5f0f4ecb43209dee28950b
+          git -C "$RUNNER_TEMP/exynos419" checkout --detach FETCH_HEAD
+          cross=$(bash scripts/install-kernel-toolchain.sh "$RUNNER_TEMP/panel-toolchain" 2>panel-object-evidence/toolchain-install.log)
+          echo "PANEL_CROSS=$cross" >> "$GITHUB_ENV"
+      - name: Compile reader against kernel APIs and run synthetic transport tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/noblesse419-calibration/build-objects.sh \
+            "$RUNNER_TEMP/exynos419" "$PANEL_CROSS" "$GITHUB_WORKSPACE/panel-object-evidence" \
+            2>&1 | tee panel-object-evidence/build-console.log
+          test -s panel-object-evidence/result.txt
+      - name: Upload configurations, logs, hashes and ELF objects
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: noblesse419-calibration-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            panel-object-evidence/*.log
+            panel-object-evidence/*.txt
+            panel-object-evidence/*.o
+            panel-object-evidence/config.review-*
+            panel-object-evidence/SHA256SUMS
+            panel-object-evidence/host-tests/*.log
+            panel-object-evidence/host-tests/results.json

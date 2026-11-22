@@ -1,0 +1,3523 @@
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Kconfig
+@@ -19,3 +19,12 @@
+ 	  Build source-reviewed panel command helpers and named GPIO parsing.
+ 	  This does not register either panel or provide calibration/brightness.
+ 	  Keep disabled for every physical hardware build pending review.
++
++config EXYNOS_NOBLESSE_DIMMING_REVIEW
++	bool "Compile isolated SDC large-panel dimming review helper"
++	depends on EXYNOS_NOBLESSE_PANEL_REVIEW
++	default n
++	help
++	  Source-derived per-instance gamma math and normal-brightness packets.
++	  No probe, calibration reader, backlight or panel registration is supplied.
++	  Keep disabled for physical builds pending independent integration review.
+--- a/drivers/video/fbdev/exynos/dpu30/panels/Makefile
++++ b/drivers/video/fbdev/exynos/dpu30/panels/Makefile
+@@ -1,2 +1,3 @@
+ obj-$(CONFIG_EXYNOS_COMMON_PANEL) += exynos_panel_drv.o panel-boe-wf012fbm.o panel-auo-hb120blx01.o
+ obj-$(CONFIG_EXYNOS_NOBLESSE_PANEL_REVIEW) += noblesse-panel-seq.o noblesse-panel-transport.o
++obj-$(CONFIG_EXYNOS_NOBLESSE_DIMMING_REVIEW) += noblesse-dimming.o
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming-decode.inc
+@@ -0,0 +1,32 @@
++/* Samsung init_dimming MTP decode, not read_gamma(). pos initially zero. */
++	for (j = 0; j < CI_MAX; j++) {
++		pos += 1;
++		temp = ((mtp[0] & (0x01<<(2-j))) ? -1 : 1) * mtp[pos];
++		data->t_gamma[V255][j] = (int)center_gamma[V255][j] + temp;
++		data->mtp[V255][j] = temp;
++	}
++	pos += 1;
++
++	for (i = V203; i >= 0; i--) {
++		for (j = 0; j < CI_MAX; j++) {
++			temp = ((mtp[pos] & 0x80) ? -1 : 1) * (mtp[pos] & 0x7f);
++			data->t_gamma[i][j] = (int)center_gamma[i][j] + temp;
++			data->mtp[i][j] = temp;
++			pos++;
++		}
++	}
++
++	/* for v0 */
++	temp = ((mtp[pos] & 0xF0) >> 4) | ((mtp[pos] & 0x0F) << 4) | ((mtp[pos + 1] & 0xF0) << 4);
++	for (i = 0; i < CI_MAX; i++) {
++		data->v0_mtp[i] = (temp >> (i * 4)) & 0x0f;
++	}
++
++	pos++;
++	/* for vt */
++	temp = (mtp[pos] & 0x0F) | (mtp[pos + 1] & 0xF0) | ((mtp[pos + 1] & 0x0F) << 8);  // B, G, R
++
++	for (i = 0; i < CI_MAX; i++) {
++		data->vt_mtp[i] = (temp >> (i * 4)) & 0x0f;
++	}
++
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming-internal.h
+@@ -0,0 +1,94 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* color index */
++enum {
++	CI_RED,
++	CI_GREEN,
++	CI_BLUE,
++	CI_MAX
++};
++
++enum {
++	V1,
++	V7,
++	V11,
++	V23,
++	V35,
++	V51,
++	V87,
++	V151,
++	V203,
++	V255,
++	VMAX
++};
++
++#define VT						0
++#define NUM_VREF				VMAX	/*10*/
++//#define MULTIPLE_VREGOUT		6144	/*6.0 * 1024 = 6144*/
++#define MULTIPLY_VALUE			1000
++
++#define MAX_GAMMA				600		/*360cd*/
++#define MAX_GRADATION			256
++
++#define TBL_INDEX_V1			1
++#define TBL_INDEX_V7			7
++#define TBL_INDEX_V11			11
++#define TBL_INDEX_V23			23
++#define TBL_INDEX_V35			35
++#define TBL_INDEX_V51			51
++#define TBL_INDEX_V87			87
++#define TBL_INDEX_V151			151
++#define TBL_INDEX_V203			203
++#define TBL_INDEX_V255			255
++
++#define GAMMA_CNT			35
++#define MAX_GAMMA_CNT			74
++#define OLED_CMD_GAMMA			0xCA
++
++#define S6E36W4X01_ID3_83		3
++#define S6E36W4X01_ID3_84		4
++
++
++
++struct v_constant {
++	int nu;
++	int de;
++};
++
++
++
++
++
++struct dim_data {
++	int fault;
++	int t_gamma[NUM_VREF][CI_MAX];
++	int mtp[NUM_VREF][CI_MAX];
++	int volt[MAX_GRADATION][CI_MAX];
++	int volt_vt[CI_MAX];
++	int vt_mtp[CI_MAX];
++	int v0_mtp[CI_MAX];
++	int look_volt[NUM_VREF][CI_MAX];
++};
++
++
++#define MAX_BRIGHTNESS			100
++#define MAX_BRIGHTNESS_COUNT	601
++#define DIMMING_METHOD_AID				0
++#define W1			DIMMING_METHOD_AID
++#define GAMMA_CMD_CNT		35
++#define OLED_CMD_GAMMA_CNT		36
++#define MAX_BR_INFO 74
++#define DOUBLE_MULTIPLE_VREGOUT 6100000
++
++struct SmtDimInfo {
++	unsigned int br;
++	unsigned int refBr;
++	const unsigned int *cGma;
++	const signed char *rTbl;
++	const signed char *cTbl;
++	unsigned char *aid;
++	unsigned char *elvCaps;
++	unsigned char *elv;
++	unsigned char gamma[OLED_CMD_GAMMA_CNT];
++	unsigned int way;
++	signed char* elvss_offset;
++};
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming-math.inc
+@@ -0,0 +1,931 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Source-derived formulas with documented bounds/failure repairs; see generate.py. */
++static int calc_vt_volt(int gamma)
++{
++	int max;
++
++	max = (sizeof(vt_trans_volt) >> 2) - 1;
++	if (gamma > max) {
++		pr_err(" %s exceed gamma value\n", __func__);
++		gamma = max;
++	}
++
++	return (int)vt_trans_volt[gamma];
++}
++
++static int calc_v0_volt(int gamma)
++{
++	int max;
++
++	max = (sizeof(v0_trans_volt) >> 2) - 1;
++	if (gamma > max) {
++		pr_err(" %s exceed gamma value\n", __func__);
++		gamma = max;
++	}
++
++	return (int)v0_trans_volt[gamma];
++}
++
++static int calc_v1_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int ret, v7, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V1][color];
++
++	if (gamma > vreg_element_max[V1]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V1];
++	}
++	if (gamma < 0) {
++		pr_err(":%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	v7 = data->volt[TBL_INDEX_V7][color];
++	gap = (DOUBLE_MULTIPLE_VREGOUT - v7);
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v1_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = DOUBLE_MULTIPLE_VREGOUT - (int)temp;
++	//printk("[LCD] calc_v1_volt : ret : %d, gamma : %d\n", ret, gamma);
++
++	return ret;
++}
++
++static int calc_v7_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int ret, v11, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V7][color];
++
++	if (gamma > vreg_element_max[V7]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V7];
++	}
++	if (gamma < 0) {
++		pr_err(":%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	v11 = data->volt[TBL_INDEX_V11][color];
++
++	gap = (DOUBLE_MULTIPLE_VREGOUT - v11);
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = DOUBLE_MULTIPLE_VREGOUT - (int)temp;
++	//printk("[LCD] calc_v7_volt : ret : %d\n", ret);
++
++	return ret;
++}
++
++static int calc_v11_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v23, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V11][color];
++
++	if (gamma > vreg_element_max[V11]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V11];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v23 = data->volt[TBL_INDEX_V23][color];
++
++	gap = vt - v23;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = vt - (int)temp;
++	//printk("[LCD] calc_v11_volt : ret : %d\n", ret);
++
++	return ret ;
++}
++
++static int calc_v23_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v35, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V23][color];
++
++	if (gamma > vreg_element_max[V23]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V23];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++
++	vt = data->volt_vt[color];
++	v35 = data->volt[TBL_INDEX_V35][color];
++
++	gap = vt - v35;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = vt - (int)temp;
++	//printk("[LCD] calc_v23_volt : ret : %d\n", ret);
++
++	return ret;
++
++}
++
++static int calc_v35_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v51, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V35][color];
++
++	if (gamma > vreg_element_max[V35]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V35];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v51 = data->volt[TBL_INDEX_V51][color];
++
++	gap = vt - v51;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = vt - (int)temp;
++	//printk("[LCD] calc_v35_volt : ret : %d\n", ret);
++
++	return ret;
++}
++
++static int calc_v51_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v87, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V51][color];
++
++	if (gamma > vreg_element_max[V51]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V51];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v87 = data->volt[TBL_INDEX_V87][color];
++
++	gap = vt - v87;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = vt - (int)temp;
++	//printk("[LCD] calc_v51_volt : ret : %d\n", ret);
++
++	return ret;
++}
++
++static int calc_v87_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v151, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V87][color];
++
++	if (gamma > vreg_element_max[V87]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V87];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v151 = data->volt[TBL_INDEX_V151][color];
++	//printk("[LCD] calc_v87_volt : vt : %d, v151 : %d\n", vt, v151);
++
++	gap = vt - v151;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++
++	ret = vt - (int)temp;
++	//printk("[LCD] calc_v87_volt : ret : %d\n", ret);
++
++	return ret;
++}
++
++static int calc_v151_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v203, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V151][color];
++
++	if (gamma > vreg_element_max[V151]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V151];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v203 = data->volt[TBL_INDEX_V203][color];
++
++	gap = vt - v203;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++	ret = vt - (int)temp;
++
++	return ret;
++}
++
++static int calc_v203_volt(struct dim_data *data, int color)
++{
++	int gap;
++	int vt, ret, v255, gamma;
++	unsigned long temp;
++
++	gamma = data->t_gamma[V203][color];
++
++	if (gamma > vreg_element_max[V203]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V203];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	vt = data->volt_vt[color];
++	v255 = data->volt[TBL_INDEX_V255][color];
++
++	gap = vt - v255;
++	if (gap < 0) { data->fault = -ERANGE; return 0; }
++	temp = (unsigned long)gap * (unsigned long)v203_trans_volt[gamma];
++	temp /= MULTIPLY_VALUE;
++	ret = vt - (int)temp;
++
++	return ret;
++}
++
++static int calc_v255_volt(struct dim_data *data, int color)
++{
++	int ret, gamma;
++
++	gamma = data->t_gamma[V255][color];
++
++	if (gamma > vreg_element_max[V255]) {
++		pr_err("%s : gamma overflow : %d\n", __func__, gamma);
++		gamma = vreg_element_max[V255];
++	}
++	if (gamma < 0) {
++		pr_err("%s : gamma undeflow : %d\n", __func__, gamma);
++		gamma = 0;
++	}
++
++	ret = (int)v255_trans_volt[gamma];
++
++	return ret;
++}
++
++static int calc_inter_v1_v7(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v1, v7, ratio, temp;
++
++	ratio = (int)int_tbl_v1_v7[gray];
++
++	v1 = data->volt[TBL_INDEX_V1][color];
++	v7 = data->volt[TBL_INDEX_V7][color];
++
++	if (ratio <= 0 || (long long)v1 - v7 < 0 ||
++	    (long long)v1 - v7 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v1 - v7) * ratio;
++	temp >>= 10;
++	ret = v1 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v7_v11(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v7, v11, ratio, temp;
++
++	ratio = (int)int_tbl_v7_v11[gray];
++	v7 = data->volt[TBL_INDEX_V7][color];
++	v11 = data->volt[TBL_INDEX_V11][color];
++
++	if (ratio <= 0 || (long long)v7 - v11 < 0 ||
++	    (long long)v7 - v11 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v7 - v11) * ratio;
++	temp >>= 10;
++	ret = v7 - temp;
++	//printk("[LCD] ret: %d\n", ret);
++
++	return ret;
++}
++
++static int calc_inter_v11_v23(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v11, v23, ratio, temp;
++
++	ratio = (int)int_tbl_v11_v23[gray];
++	v11 = data->volt[TBL_INDEX_V11][color];
++	v23 = data->volt[TBL_INDEX_V23][color];
++
++	if (ratio <= 0 || (long long)v11 - v23 < 0 ||
++	    (long long)v11 - v23 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v11 - v23) * ratio;
++	temp >>= 10;
++	ret = v11 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v23_v35(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v23, v35, ratio, temp;
++
++	ratio = (int)int_tbl_v23_v35[gray];
++	v23 = data->volt[TBL_INDEX_V23][color];
++	v35 = data->volt[TBL_INDEX_V35][color];
++
++	if (ratio <= 0 || (long long)v23 - v35 < 0 ||
++	    (long long)v23 - v35 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v23 - v35) * ratio;
++	temp >>= 10;
++	ret = v23 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v35_v51(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v35, v51, ratio, temp;
++
++	ratio = (int)int_tbl_v35_v51[gray];
++	v35 = data->volt[TBL_INDEX_V35][color];
++	v51 = data->volt[TBL_INDEX_V51][color];
++
++	if (ratio <= 0 || (long long)v35 - v51 < 0 ||
++	    (long long)v35 - v51 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v35 - v51) * ratio;
++	temp >>= 10;
++	ret = v35 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v51_v87(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v51, v87, ratio, temp;
++
++	ratio = (int)int_tbl_v51_v87[gray];
++	v51 = data->volt[TBL_INDEX_V51][color];
++	v87 = data->volt[TBL_INDEX_V87][color];
++
++	if (ratio <= 0 || (long long)v51 - v87 < 0 ||
++	    (long long)v51 - v87 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v51 - v87) * ratio;
++	temp >>= 10;
++	ret = v51 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v87_v151(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v87, v151, ratio, temp;
++
++	ratio = (int)int_tbl_v87_v151[gray];
++	v87 = data->volt[TBL_INDEX_V87][color];
++	v151 = data->volt[TBL_INDEX_V151][color];
++
++	if (ratio <= 0 || (long long)v87 - v151 < 0 ||
++	    (long long)v87 - v151 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v87 - v151) * ratio;
++	temp >>= 10;
++	ret = v87 - temp;
++	return ret;
++}
++
++static int calc_inter_v151_v203(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v151, v203, ratio, temp;
++
++	ratio = (int)int_tbl_v151_v203[gray];
++	v151 = data->volt[TBL_INDEX_V151][color];
++	v203 = data->volt[TBL_INDEX_V203][color];
++
++	if (ratio <= 0 || (long long)v151 - v203 < 0 ||
++	    (long long)v151 - v203 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v151 - v203) * ratio;
++	temp >>= 10;
++	ret = v151 - temp;
++
++	return ret;
++}
++
++static int calc_inter_v203_v255(struct dim_data *data, int gray, int color)
++{
++	int ret = 0;
++	int v203, v255, ratio, temp;
++
++	ratio = (int)int_tbl_v203_v255[gray];
++	v203 = data->volt[TBL_INDEX_V203][color];
++	v255 = data->volt[TBL_INDEX_V255][color];
++
++	if (ratio <= 0 || (long long)v203 - v255 < 0 ||
++	    (long long)v203 - v255 > 2147483647LL / ratio) {
++		data->fault = -ERANGE; return 0;
++	}
++	temp = (v203 - v255) * ratio;
++	temp >>= 10;
++	ret = v203 - temp;
++
++	return ret;
++}
++
++static int calc_reg_v1(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = DOUBLE_MULTIPLE_VREGOUT - data->look_volt[V1][color];
++	t2 = DOUBLE_MULTIPLE_VREGOUT - data->look_volt[V7][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V1].de) / (unsigned long)t2;
++	ret =  temp - fix_const[V1].nu;
++
++	return ret;
++}
++
++
++static int calc_reg_v7(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = DOUBLE_MULTIPLE_VREGOUT - data->look_volt[V7][color];
++	t2 = DOUBLE_MULTIPLE_VREGOUT - data->look_volt[V11][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V7].de) / (unsigned long)t2;
++	ret =  temp - fix_const[V7].nu;
++
++	return ret;
++}
++
++
++static int calc_reg_v11(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V11][color];
++	t2 = data->volt_vt[color] - data->look_volt[V23][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V11].de) / (unsigned long)t2;
++	ret =  (int)temp - fix_const[V11].nu;
++
++	return ret;
++
++}
++
++static int calc_reg_v23(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V23][color];
++	t2 = data->volt_vt[color] - data->look_volt[V35][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V23].de) / (unsigned long)t2;
++	ret = (int)temp - fix_const[V23].nu;
++
++	return ret;
++
++}
++
++static int calc_reg_v35(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V35][color];
++	t2 = data->volt_vt[color] - data->look_volt[V51][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V35].de)/ (unsigned long)t2;
++	ret = (int)temp - fix_const[V35].nu;
++
++	return ret;
++}
++
++
++static int calc_reg_v51(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V51][color];
++	t2 = data->volt_vt[color] - data->look_volt[V87][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V51].de) / (unsigned long)t2;
++	ret = (int)temp - fix_const[V51].nu;
++
++	return ret;
++}
++
++
++static int calc_reg_v87(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V87][color];
++	t2 = data->volt_vt[color] - data->look_volt[V151][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V87].de) / (unsigned long)t2;
++
++	ret = (int)temp - fix_const[V87].nu;
++
++	return ret;
++}
++
++static int calc_reg_v151(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V151][color];
++	t2 = data->volt_vt[color] - data->look_volt[V203][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V151].de) / (unsigned long)t2;
++	ret = (int)temp - fix_const[V151].nu;
++
++	return ret;
++}
++
++
++
++static int calc_reg_v203(struct dim_data *data, int color)
++{
++	int ret;
++	int t1, t2;
++	unsigned long temp;
++
++	t1 = data->volt_vt[color] - data->look_volt[V203][color];
++	t2 = data->volt_vt[color] - data->look_volt[V255][color];
++
++	if (t1 < 0 || t2 <= 0) { data->fault = -ERANGE; return 0; }
++
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V203].de) / (unsigned long)t2;
++	ret = (int)temp - fix_const[V203].nu;
++
++	return ret;
++}
++
++static int calc_reg_v255(struct dim_data *data, int color)
++{
++	int ret;
++	int t1;
++	unsigned long temp;
++
++	t1 = DOUBLE_MULTIPLE_VREGOUT -  data->look_volt[V255][color];
++	if (t1 < 0) { data->fault = -ERANGE; return 0; }
++	temp = ((unsigned long)t1 * (unsigned long)fix_const[V255].de) / DOUBLE_MULTIPLE_VREGOUT;
++	ret = (int)temp - fix_const[V255].nu;
++
++	return ret;
++}
++
++static int s6e36w4x01_generate_volt_table(struct dim_data *data)
++{
++	int i, j;
++	int seq, index, gray;
++	int ret = 0;
++
++	int calc_seq[NUM_VREF] = {V255, V203, V151, V87, V51, V35, V23, V11, V7, V1};
++	int (*calc_volt_point[NUM_VREF])(struct dim_data *, int) = {
++		calc_v1_volt,
++		calc_v7_volt,
++		calc_v11_volt,
++		calc_v23_volt,
++		calc_v35_volt,
++		calc_v51_volt,
++		calc_v87_volt,
++		calc_v151_volt,
++		calc_v203_volt,
++		calc_v255_volt,
++	};
++	int (*calc_inter_volt[NUM_VREF])(struct dim_data *, int, int)  = {
++		NULL,
++		calc_inter_v1_v7,
++		calc_inter_v7_v11,
++		calc_inter_v11_v23,
++		calc_inter_v23_v35,
++		calc_inter_v35_v51,
++		calc_inter_v51_v87,
++		calc_inter_v87_v151,
++		calc_inter_v151_v203,
++		calc_inter_v203_v255,
++	};
++
++	for (i = 0; i < CI_MAX; i++)
++		data->volt_vt[i] = calc_vt_volt(data->vt_mtp[i]);
++
++	/* calculate voltage for V0 */
++	for (i = 0; i < CI_MAX; i++)
++		data->volt[0][i] = calc_v0_volt(data->v0_mtp[i]);
++
++	/* calculate voltage for every vref point */
++	for (j = 0; j < NUM_VREF; j++) {
++		seq = calc_seq[j];
++		index = vref_index[seq];
++		if (calc_volt_point[seq] != NULL) {
++			for (i = 0; i < CI_MAX; i++)
++				data->volt[index][i] = calc_volt_point[seq](data ,i);
++		}
++	}
++
++	if (data->fault) return data->fault;
++	index = 0;
++	for (i = 1; i < MAX_GRADATION; i++) {
++		if ((unsigned int)i == vref_index[index]) {
++			index++;
++			continue;
++		}
++		gray = (i - vref_index[index - 1]) - 1;
++		for (j = 0; j < CI_MAX; j++) {
++			if (calc_inter_volt[index] != NULL) {
++				data->volt[i][j] = calc_inter_volt[index](data, gray, j);
++				if (data->fault) return data->fault;
++			}
++		}
++
++	}
++#if defined (SMART_DIMMING_DEBUG)
++	printk("=========================== VT Voltage ===========================\n");
++	printk("R : %05d : G: %05d : B : %05d\n",
++					data->volt_vt[0], data->volt_vt[1], data->volt_vt[2]);
++	printk("\n=================================================================\n");
++	for (i = 0; i < MAX_GRADATION; i++) {
++		printk("V%03d R : %05d : G : %05d B : %05d\n", i,
++					data->volt[i][CI_RED], data->volt[i][CI_GREEN], data->volt[i][CI_BLUE]);
++	}
++#endif
++	return ret;
++}
++
++static int lookup_volt_index(struct dim_data *data, int gray)
++{
++	int ret, i;
++	int temp;
++	int index;
++	int index_l, index_h, exit;
++	int cnt_l, cnt_h;
++	int p_delta, delta;
++
++	(void)data;
++	temp = gray / (MULTIPLY_VALUE * MULTIPLY_VALUE);
++
++	if (gray < 0 || temp >= MAX_BRIGHTNESS_COUNT)
++		return -ERANGE;
++	index = (int)lookup_tbl[temp];
++
++	exit = 1;
++	i = 0;
++	while(exit) {
++		if (i >= MAX_BRIGHTNESS_COUNT) return -ERANGE;
++		index_l = temp - i;
++		index_h = temp + i;
++		if (index_l < 0)
++			index_l = 0;
++		if (index_h >= MAX_BRIGHTNESS_COUNT)
++			index_h = MAX_BRIGHTNESS_COUNT - 1;
++		cnt_l = (int)lookup_tbl[index] - (int)lookup_tbl[index_l];
++		cnt_h = (int)lookup_tbl[index_h] - (int)lookup_tbl[index];
++
++		if (cnt_l + cnt_h) {
++			exit = 0;
++		}
++		i++;
++	}
++
++	p_delta = 0;
++	index = (int)lookup_tbl[index_l];
++	ret = index;
++
++	temp = gamma_double_multi_tbl[index];
++	//temp = gamma_multi_tbl[index] * MULTIPLY_VALUE;
++
++	if (gray > temp)
++		p_delta = gray - temp;
++	else
++		p_delta = temp - gray;
++
++	for (i = 0; i <= (cnt_l + cnt_h); i++) {
++		if (index + i < 0 || index + i >= MAX_GRADATION) return -ERANGE;
++		temp = gamma_double_multi_tbl[index + i];
++		//temp = gamma_multi_tbl[index + i] * MULTIPLY_VALUE;
++		if (gray > temp)
++			delta = gray - temp;
++		else
++			delta = temp - gray;
++
++		if (delta < p_delta) {
++			p_delta = delta;
++			ret = index + i;
++		}
++	}
++
++	return ret;
++}
++
++static int s6e36w4x01_cal_gamma_from_index(struct dim_data *data, struct SmtDimInfo *brInfo)
++{
++	int i, j;
++	int ret = 0;
++	int gray, index;
++	long long gray_temp;
++	signed int shift, c_shift;
++	int gamma_int[NUM_VREF][CI_MAX];
++	int br, temp;
++	unsigned char *result;
++	int (*calc_reg[NUM_VREF])(struct dim_data *, int)  = {
++		calc_reg_v1,
++		calc_reg_v7,
++		calc_reg_v11,
++		calc_reg_v23,
++		calc_reg_v35,
++		calc_reg_v51,
++		calc_reg_v87,
++		calc_reg_v151,
++		calc_reg_v203,
++		calc_reg_v255,
++	};
++
++	br = brInfo->refBr;
++
++	result = brInfo->gamma;
++
++	if (br > MAX_BRIGHTNESS_COUNT) {
++		printk("Warning Exceed Max brightness : %d\n", br);
++		br = MAX_BRIGHTNESS_COUNT;
++	}
++	for (i = V1; i < NUM_VREF; i++) {
++		/* get reference shift value */
++		if (brInfo->rTbl == NULL) {
++			shift = 0;
++		}
++		else {
++			shift = (signed int)brInfo->rTbl[i];
++		}
++
++		if (brInfo->br == MAX_GAMMA){
++			gray = brInfo->cGma[vref_index[i]] * br;
++			index = lookup_volt_index(data, gray);
++		}else{
++			gray_temp = (long long)brInfo->cGma[vref_index[i]] * br;
++			gray = (int)(gray_temp / 1000);
++			index = lookup_volt_index(data, gray);
++		}
++		if (index < 0) return index;
++		index = index + shift;
++
++		if (i == V1)
++			index = 1;
++		if (index < 0 || index >= MAX_GRADATION) return -ERANGE;
++		for (j = 0; j < CI_MAX; j++) {
++			if (calc_reg[i] != NULL) {
++				data->look_volt[i][j] = data->volt[index][j];
++			}
++		}
++	}
++
++	for (i = V1; i < NUM_VREF; i++) {
++		for (j = 0; j < CI_MAX; j++) {
++			if (calc_reg[i] != NULL) {
++				index = (i * CI_MAX) + j;
++
++				if (brInfo->cTbl == NULL)
++					c_shift = 0;
++				else
++					c_shift = (signed int)brInfo->cTbl[index];
++
++				temp = calc_reg[i](data, j);
++				if (data->fault) return data->fault;
++				gamma_int[i][j] = (temp + c_shift) - data->mtp[i][j];
++
++				if (gamma_int[i][j] >= vreg_element_max[i])
++					gamma_int[i][j] = vreg_element_max[i];
++				if (gamma_int[i][j] < 0)
++					gamma_int[i][j] = 0;
++			}
++		}
++	}
++
++	index = 0;
++	result[index++] = OLED_CMD_GAMMA;
++
++	for (i = V255; i >= V1; i--) {
++		if (i == V255) {
++			result[index] = (gamma_int[i][CI_RED] > 0xff ? 1 : 0)<<2;
++			result[index] |= (gamma_int[i][CI_GREEN] > 0xff ? 1 : 0)<<1;
++			result[index++] |= (gamma_int[i][CI_BLUE] > 0xff ? 1 : 0)<<0;
++		}
++		for (j = 0; j < CI_MAX; j++) {
++			//printk("%3d, ", gamma_int[i][j]);
++			if (i == V255) {
++				//result[index++] = gamma_int[i][j] > 0xff ? 1 : 0;
++				result[index++] = gamma_int[i][j] & 0xff;
++			} else
++				result[index++] = (unsigned char)gamma_int[i][j];
++		}
++	}
++		//printk("\n");
++	result[index++] = 0x00;
++	result[index++] = 0x00;
++
++	return ret;
++}
++
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming-tables.inc
+@@ -0,0 +1,2231 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++
++/* Generated exact tables, except private/static linkage and signed VBIAS offsets. */
++
++/* s6e36w4x01_dimming.h:68 */
++static const unsigned int vref_index[NUM_VREF] = {
++	TBL_INDEX_V1,
++	TBL_INDEX_V7,
++	TBL_INDEX_V11,
++	TBL_INDEX_V23,
++	TBL_INDEX_V35,
++	TBL_INDEX_V51,
++	TBL_INDEX_V87,
++	TBL_INDEX_V151,
++	TBL_INDEX_V203,
++	TBL_INDEX_V255,
++};
++
++/* s6e36w4x01_param.h:128 */
++static const short center_gamma[NUM_VREF][CI_MAX] = {
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x080, 0x080, 0x080 },
++	{ 0x100, 0x100, 0x100 },
++};
++
++/* s6e36w4x01_param.h:206 */
++static const unsigned char TEST_KEY_ON_0[] = {
++	0xF0,
++	0x5A, 0x5A,
++};
++
++/* s6e36w4x01_param.h:211 */
++static const unsigned char TEST_KEY_OFF_0[] = {
++	0xF0,
++	0xA5, 0xA5,
++};
++
++/* s6e36w4x01_param.h:625 */
++static const unsigned char PANEL_UPDATE[] = {
++	0xF7,
++	0x03
++};
++
++/* s6e36w4x01_param.h:644 */
++static const unsigned char F4_GPARA[] = {
++	0xB0,
++	0x04, 0xF4
++};
++
++/* s6e36w4x01_param.h:1017 */
++static const unsigned int gma2p20 [256] = {
++         0,          5,         23,         57,        107,        175,        262,        367,
++       493,        638,        805,        992,       1202,       1433,       1687,       1963,
++      2263,       2586,       2932,       3303,       3697,       4116,       4560,       5028,
++      5522,       6041,       6585,       7155,       7751,       8373,       9021,       9696,
++     10398,      11126,      11881,      12664,      13473,      14311,      15175,      16068,
++     16988,      17936,      18913,      19918,      20951,      22013,      23104,      24223,
++     25371,      26549,      27755,      28991,      30257,      31551,      32876,      34230,
++     35614,      37029,      38473,      39947,      41452,      42987,      44553,      46149,
++     47776,      49433,      51122,      52842,      54592,      56374,      58187,      60032,
++     61907,      63815,      65754,      67725,      69727,      71761,      73828,      75926,
++     78057,      80219,      82414,      84642,      86901,      89194,      91518,      93876,
++     96266,      98689,     101145,     103634,     106156,     108711,     111299,     113921,
++    116576,     119264,     121986,     124741,     127530,     130352,     133209,     136099,
++    139022,     141980,     144972,     147998,     151058,     154152,     157281,     160444,
++    163641,     166872,     170138,     173439,     176774,     180144,     183549,     186989,
++    190463,     193972,     197516,     201096,     204710,     208360,     212044,     215764,
++    219520,     223310,     227137,     230998,     234895,     238828,     242796,     246800,
++    250840,     254916,     259027,     263175,     267358,     271577,     275833,     280124,
++    284452,     288816,     293216,     297653,     302125,     306635,     311180,     315763,
++    320382,     325037,     329729,     334458,     339223,     344026,     348865,     353741,
++    358654,     363604,     368591,     373615,     378676,     383775,     388910,     394083,
++    399293,     404541,     409826,     415148,     420508,     425905,     431340,     436813,
++    442323,     447871,     453456,     459080,     464741,     470440,     476177,     481952,
++    487765,     493616,     499505,     505432,     511398,     517401,     523443,     529523,
++    535642,     541798,     547994,     554227,     560499,     566810,     573159,     579547,
++    585973,     592438,     598942,     605484,     612066,     618686,     625345,     632043,
++    638779,     645555,     652370,     659224,     666117,     673049,     680020,     687031,
++    694081,     701170,     708298,     715465,     722672,     729919,     737205,     744530,
++    751895,     759300,     766744,     774227,     781751,     789314,     796917,     804559,
++    812241,     819964,     827726,     835528,     843370,     851252,     859174,     867136,
++    875138,     883180,     891262,     899385,     907547,     915750,     923993,     932277,
++    940601,     948965,     957370,     965815,     974300,     982826,     991393,    1000000,
++
++};
++
++/* s6e36w4x01_param.h:1053 */
++static const unsigned int gma2p15 [256] = {
++    0, 6698, 29727, 71080, 131937, 213169, 315474, 439440,
++    585574, 754328, 946103, 1161269, 1400162, 1663094, 1950356, 2262220,
++    2598942, 2960764, 3347916, 3760615, 4199070, 4663480, 5154035, 5670919,
++    6214308, 6784372, 7381274, 8005173, 8656222, 9334570, 10040361, 10773734,
++    11534826, 12323770, 13140693, 13985723, 14858980, 15760584, 16690654, 17649301,
++    18636639, 19652776, 20697819, 21771873, 22875040, 24007421, 25169115, 26360219,
++    27580826, 28831032, 30110927, 31420601, 32760144, 34129642, 35529181, 36958845,
++    38418718, 39908881, 41429415, 42980398, 44561910, 46174028, 47816826, 49490381,
++    51194765, 52930053, 54696316, 56493624, 58322049, 60181659, 62072523, 63994708,
++    65948281, 67933308, 69949854, 71997983, 74077759, 76189245, 78332504, 80507596,
++    82714583, 84953525, 87224481, 89527511, 91862673, 94230024, 96629622, 99061524,
++    101525785, 104022462, 106551608, 109113279, 111707528, 114334409, 116993975, 119686279,
++    122411371, 125169305, 127960131, 130783899, 133640660, 136530464, 139453360, 142409396,
++    145398622, 148421086, 151476835, 154565917, 157688378, 160844266, 164033626, 167256505,
++    170512947, 173802999, 177126704, 180484109, 183875255, 187300189, 190758952, 194251589,
++    197778141, 201338653, 204933165, 208561721, 212224361, 215921128, 219652062, 223417204,
++    227216595, 231050275, 234918284, 238820662, 242757448, 246728683, 250734404, 254774650,
++    258849461, 262958874, 267102927, 271281659, 275495106, 279743307, 284026298, 288344115,
++    292696797, 297084379, 301506898, 305964389, 310456888, 314984432, 319547055, 324144792,
++    328777680, 333445751, 338149042, 342887587, 347661419, 352470573, 357315083, 362194982,
++    367110304, 372061083, 377047350, 382069141, 387126486, 392219419, 397347973, 402512179,
++    407712069, 412947677, 418219033, 423526169, 428869116, 434247907, 439662572, 445113142,
++    450599648, 456122121, 461680591, 467275089, 472905645, 478572289, 484275052, 490013962,
++    495789051, 501600347, 507447880, 513331679, 519251773, 525208192, 531200964, 537230118,
++    543295683, 549397687, 555536159, 561711126, 567922618, 574170663, 580455287, 586776519,
++    593134387, 599528917, 605960139, 612428078, 618932762, 625474219, 632052474, 638667556,
++    645319490, 652008304, 658734024, 665496677, 672296288, 679132884, 686006491, 692917135,
++    699864842, 706849638, 713871548, 720930599, 728026815, 735160222, 742330846, 749538711,
++    756783843, 764066266, 771386007, 778743088, 786137536, 793569374, 801038628, 808545322,
++    816089480, 823671127, 831290286, 838946982, 846641239, 854373080, 862142530, 869949613,
++    877794351, 885676769, 893596891, 901554738, 909550336, 917583707, 925654874, 933763861,
++    941910690, 950095384, 958317967, 966578461, 974876889, 983213273, 991587636, 1000000000,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:30 */
++static const unsigned char s6e36w4x01_br_tbl[MAX_BRIGHTNESS + 1] = {
++	0,
++	0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
++	5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
++	10, 10, 11, 11, 12, 13, 13, 14, 14, 15,
++	16, 16, 17, 17, 18, 19, 19, 20, 20, 21,
++	22, 22, 23, 23, 24, 25, 25, 26, 26, 27,
++	28, 28, 29, 29, 30, 31, 31, 32, 32, 33,
++	34, 34, 35, 35, 36, 37, 37, 38, 38, 39,
++	40, 40, 41, 42, 43, 43, 44, 45, 45, 46,
++	47, 47, 48, 48, 49, 50, 50, 51, 51, 52,
++	54, 57, 59, 62, 64, 66, 68, 69, 71, 73,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:46 */
++static const unsigned char s6e36w4x01_vint_latest[MAX_BR_INFO] = {
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09,
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09,
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x0A, 0x0C, 0x0C, 0x0C, 0x0C,
++	0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
++	0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
++	0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
++	0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
++	0x0C, 0x0C, 0x0C, 0x0C,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:57 */
++static const unsigned char s6e36w4x01_vint_0x83[MAX_BR_INFO] = {
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09,
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09, 0x09,
++	0x09, 0x09, 0x09, 0x09, 0x09, 0x0A, 0x0F, 0x14, 0x14, 0x14,
++	0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
++	0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
++	0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
++	0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
++	0x14, 0x14, 0x14, 0x14,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:68 */
++static const unsigned char s6e36w4x01_elvss[MAX_BR_INFO] = {
++	0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16,
++	0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16,
++	0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16, 0x16,
++	0x16, 0x16, 0x16, 0x16, 0x15, 0x15, 0x15, 0x15, 0x14, 0x14,
++	0x14, 0x13, 0x13, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12,
++	0x11, 0x11, 0x10, 0x10, 0x0F, 0x0F, 0x0E, 0x0E, 0x0E, 0x0E,
++	0x0E, 0x0E, 0x0E, 0x0E, 0x0D, 0x0D, 0x0C, 0x0C, 0x0B, 0x0A,
++	0x09, 0x09, 0x08, 0x07,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:79 */
++static const unsigned char s6e36w4x01_mps_con[MAX_BR_INFO] = {
++	0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
++	0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
++	0xcc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
++	0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
++	0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
++	0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
++	0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
++	0xdc, 0xdc, 0xdc, 0xdc,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:90 */
++static const signed char s6e36w4x01_vbias[MAX_BR_INFO] = {
++	0x1c, 0x1b, 0x1a, 0x19, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13,
++	0x12, 0x11, 0x10, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09,
++	0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:101 */
++static const signed char s6e36w4x01_vbias_30hz_0x83[MAX_BR_INFO] = {
++	0x08, 0x07, 0x07, 0x06, 0x05, 0x05, 0x04, 0x03, 0x03, 0x02,
++	0x02, 0x02, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
++	0x00, 0x00, -0x02, -0x04, -0x06, 0x0A, 0x04, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:123 */
++static const signed char s6e36w4x01_vbias_30hz_latest[MAX_BR_INFO] = {
++	0x13, 0x13, 0x12, 0x12, 0x11, 0x11, 0x10, 0x10, 0x0F, 0x0F,
++	0x0E, 0x0E, 0x0E, 0x0D, 0x0D, 0x0C, 0x0C, 0x0B, 0x0B, 0x0A,
++	0x0A, 0x09, 0x09, 0x08, 0x08, 0x02, 0x01, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:146 */
++static const unsigned char s6e36w4x01_aid_latest[MAX_BR_INFO*2] = {
++	0x01, 0x52, 0x01, 0x4F, 0x01, 0x4A, 0x01, 0x46, 0x01, 0x43,
++	0x01, 0x41, 0x01, 0x3B, 0x01, 0x39, 0x01, 0x31, 0x01, 0x2B,
++	0x01, 0x29, 0x01, 0x24, 0x01, 0x1F, 0x01, 0x1A, 0x01, 0x12,
++	0x01, 0x0A, 0x01, 0x08, 0x00, 0xFF, 0x00, 0xF4, 0x00, 0xEA,
++	0x00, 0xE2, 0x00, 0xDA, 0x00, 0xD0, 0x00, 0xC3, 0x00, 0xB8,
++	0x00, 0xB8, 0x00, 0xB2, 0x00, 0xA3, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9A,
++	0x00, 0x8A, 0x00, 0x7A, 0x00, 0x6B, 0x00, 0x59, 0x00, 0x4D,
++	0x00, 0x4D, 0x00, 0x4D, 0x00, 0x4D, 0x00, 0x4D, 0x00, 0x4D,
++	0x00, 0x4D, 0x00, 0x4D, 0x00, 0x4C, 0x00, 0x44, 0x00, 0x41,
++	0x00, 0x3A, 0x00, 0x32, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:164 */
++static const unsigned char s6e36w4x01_aid_0x83[MAX_BR_INFO*2] = {
++	0x01, 0x4F, 0x01, 0x4A, 0x01, 0x44, 0x01, 0x42, 0x01, 0x40,
++	0x01, 0x3A, 0x01, 0x35, 0x01, 0x32, 0x01, 0x2A, 0x01, 0x25,
++	0x01, 0x22, 0x01, 0x1D, 0x01, 0x13, 0x01, 0x11, 0x01, 0x09,
++	0x01, 0x01, 0x00, 0xFB, 0x00, 0xF3, 0x00, 0xEB, 0x00, 0xE1,
++	0x00, 0xD5, 0x00, 0xCF, 0x00, 0xC2, 0x00, 0xB4, 0x00, 0xA3,
++	0x00, 0xA3, 0x00, 0xA3, 0x00, 0xA3, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9A,
++	0x00, 0x8B, 0x00, 0x78, 0x00, 0x6B, 0x00, 0x5B, 0x00, 0x4C,
++	0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C,
++	0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4B, 0x00, 0x44, 0x00, 0x41,
++	0x00, 0x39, 0x00, 0x32, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:182 */
++static const unsigned char s6e36w4x01_aid[MAX_BR_INFO*2] = {
++	0x01, 0x54, 0x01, 0x52, 0x01, 0x50, 0x01, 0x4A, 0x01, 0x49,
++	0x01, 0x43, 0x01, 0x41, 0x01, 0x3C, 0x01, 0x36, 0x01, 0x32,
++	0x01, 0x31, 0x01, 0x2B, 0x01, 0x24, 0x01, 0x22, 0x01, 0x1A,
++	0x01, 0x13, 0x01, 0x11, 0x01, 0x0A, 0x01, 0x02, 0x00, 0xF9,
++	0x00, 0xF2, 0x00, 0xEA, 0x00, 0xE1, 0x00, 0xD4, 0x00, 0xCA,
++	0x00, 0xC1, 0x00, 0xB7, 0x00, 0xA9, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B,
++	0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9B, 0x00, 0x9A,
++	0x00, 0x8B, 0x00, 0x78, 0x00, 0x6B, 0x00, 0x5B, 0x00, 0x4C,
++	0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4C,
++	0x00, 0x4C, 0x00, 0x4C, 0x00, 0x4B, 0x00, 0x44, 0x00, 0x41,
++	0x00, 0x39, 0x00, 0x32, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++	0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:200 */
++static const unsigned char MAX_GAMMA_SET[GAMMA_CMD_CNT] = {
++	0xCA,
++	0x07, 0x00, 0x00,
++	0x00, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x80, 0x80,
++	0x80, 0x00, 0x00,
++	0x00,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:229 */
++static const int vreg_element_max[NUM_VREF] = {
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0xff,
++	0x1ff,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:242 */
++static const struct v_constant fix_const[NUM_VREF] = {
++	{.nu = 0,	.de = 256},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 64,	.de = 320},
++	{.nu = 229,	.de = 860},
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:290 */
++static const int gamma_multi_tbl[256] = {
++	0, 3, 14, 34, 64, 105, 157, 220, 296, 383,
++	483, 595, 721, 860, 1012, 1178, 1358, 1551, 1759, 1982,
++	2218, 2470, 2736, 3017, 3313, 3624, 3951, 4293, 4651, 5024,
++	5413, 5818, 6239, 6676, 7129, 7598, 8084, 8586, 9105, 9641,
++	10193, 10762, 11348, 11951, 12571, 13208, 13862, 14534, 15223, 15929,
++	16653, 17395, 18154, 18931, 19726, 20538, 21369, 22217, 23084, 23968,
++	24871, 25792, 26732, 27689, 28665, 29660, 30673, 31705, 32755, 33824,
++	34912, 36019, 37144, 38289, 39452, 40635, 41836, 43057, 44297, 45556,
++	46834, 48132, 49449, 50785, 52141, 53516, 54911, 56326, 57760, 59214,
++	60687, 62180, 63694, 65227, 66780, 68353, 69945, 71558, 73191, 74845,
++	76518, 78211, 79925, 81659, 83413, 85188, 86983, 88799, 90635, 92491,
++	94368, 96266, 98184, 100123, 102083, 104063, 106065, 108087, 110129, 112193,
++	114278, 116383, 118510, 120657, 122826, 125016, 127227, 129459, 131712, 133986,
++	136282, 138599, 140937, 143297, 145678, 148080, 150504, 152950, 155416, 157905,
++	160415, 162946, 165500, 168075, 170671, 173290, 175930, 178592, 181275, 183981,
++	186708, 189458, 192229, 195022, 197837, 200675, 203534, 206415, 209319, 212245,
++	215192, 218162, 221155, 224169, 227206, 230265, 233346, 236450, 239576, 242724,
++	245895, 249089, 252305, 255543, 258804, 262088, 265394, 268723, 272074, 275448,
++	278845, 282264, 285706, 289171, 292659, 296170, 299703, 303259, 306839, 310441,
++	314066, 317714, 321385, 325079, 328796, 332536, 336299, 340086, 343895, 347728,
++	351584, 355463, 359365, 363291, 367239, 371211, 375207, 379226, 383268, 387333,
++	391422, 395534, 399670, 403829, 408012, 412218, 416448, 420702, 424979, 429279,
++	433603, 437951, 442323, 446718, 451137, 455580, 460046, 464536, 469050, 473588,
++	478150, 482735, 487345, 491978, 496635, 501317, 506022, 510751, 515504, 520281,
++	525083, 529908, 534757, 539631, 544528, 549450, 554396, 559366, 564360, 569379,
++	574422, 579489, 584580, 589696, 594836, 600000
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:319 */
++static const int gamma_double_multi_tbl[256] = {
++  0, 3046, 13997, 34153, 64312, 105074, 156926, 220282, 295502, 382910,
++  482795, 595425, 721044, 859881, 1012149, 1178050, 1357772, 1551495, 1759391, 1981622,
++  2218344, 2469706, 2735853, 3016922, 3313047, 3624356, 3950974, 4293022, 4650616, 5023871,
++  5412895, 5817797, 6238681, 6675649, 7128801, 7598232, 8084038, 8586312, 9105143, 9640621,
++  10192831, 10761860, 11347790, 11950703, 12570679, 13207797, 13862134, 14533765, 15222766, 15929210,
++  16653168, 17394712, 18153911, 18930835, 19725550, 20538124, 21368622, 22217108, 23083648, 23968303,
++  24871135, 25792206, 26731576, 27689305, 28665452, 29660075, 30673230, 31704975, 32755366, 33824459,
++  34912306, 36018964, 37144485, 38288923, 39452328, 40634754, 41836251, 43056869, 44296660, 45555672,
++  46833954, 48131555, 49448524, 50784906, 52140751, 53516104, 54911012, 56325520, 57759674, 59213519,
++  60687099, 62180458, 63693641, 65226690, 66779649, 68352560, 69945466, 71558408, 73191428, 74844567,
++  76517867, 78211367, 79925108, 81659130, 83413472, 85188174, 86983275, 88798814, 90634828, 92491356,
++  94368437, 96266106, 98184403, 100123363, 102083024, 104063422, 106064593, 108086573, 110129399, 112193105,
++  114277727, 116383300, 118509859, 120657438, 122826071, 125015794, 127226639, 129458640, 131711831, 133986245,
++  136281915, 138598875, 140937156, 143296791, 145677812, 148080252, 150504142, 152949514, 155416399, 157904830,
++  160414836, 162946449, 165499700, 168074619, 170671237, 173289584, 175929689, 178591584, 181275298, 183980860,
++  186708299, 189457646, 192228929, 195022178, 197837420, 200674685, 203534001, 206415397, 209318900, 212244540,
++  215192344, 218162339, 221154553, 224169015, 227205751, 230264788, 233346154, 236449876, 239575980, 242724494,
++  245895443, 249088855, 252304756, 255543171, 258804128, 262087652, 265393769, 268722505, 272073885, 275447935,
++  278844681, 282264147, 285706359, 289171342, 292659121, 296169721, 299703166, 303259481, 306838691, 310440820,
++  314065893, 317713933, 321384966, 325079014, 328796101, 332536253, 336299491, 340085841, 343895325, 347727967,
++  351583790, 355462818, 359365074, 363290580, 367239360, 371211436, 375206832, 379225571, 383267673, 387333163,
++  391422063, 395534395, 399670181, 403829444, 408012205, 412218487, 416448312, 420701701, 424978676, 429279259,
++  433603472, 437951336, 442322872, 446718103, 451137048, 455579730, 460046170, 464536389, 469050407, 473588245,
++  478149926, 482735468, 487344894, 491978223, 496635477, 501316675, 506021838, 510750987, 515504142, 520281323,
++  525082549, 529907843, 534757222, 539630708, 544528320, 549450078, 554396001, 559366110, 564360424, 569378963,
++  574421746, 579488792, 584580121, 589695753, 594835706, 600000000,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:348 */
++static const unsigned char lookup_tbl[601] = {
++	0, 14, 19, 23, 26, 29, 31, 34, 36, 38,
++	40, 41, 43, 45, 46, 48, 49, 50, 52, 53,
++	54, 56, 57, 58, 59, 60, 61, 62, 63, 64,
++	65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
++	74, 75, 76, 77, 78, 79, 79, 80, 81, 82,
++	82, 83, 84, 85, 85, 86, 87, 87, 88, 89,
++	90, 90, 91, 92, 92, 93, 93, 94, 95, 95,
++	96, 97, 97, 98, 98, 99, 100, 100, 101, 101,
++	102, 103, 103, 104, 104, 105, 105, 106, 107, 107,
++	108, 108, 109, 109, 110, 110, 111, 111, 112, 112,
++	113, 113, 114, 114, 115, 115, 116, 116, 117, 117,
++	118, 118, 119, 119, 120, 120, 121, 121, 122, 122,
++	123, 123, 124, 124, 125, 125, 125, 126, 126, 127,
++	127, 128, 128, 129, 129, 129, 130, 130, 131, 131,
++	132, 132, 132, 133, 133, 134, 134, 135, 135, 135,
++	136, 136, 137, 137, 137, 138, 138, 139, 139, 139,
++	140, 140, 141, 141, 141, 142, 142, 143, 143, 143,
++	144, 144, 145, 145, 145, 146, 146, 146, 147, 147,
++	148, 148, 148, 149, 149, 149, 150, 150, 150, 151,
++	151, 152, 152, 152, 153, 153, 153, 154, 154, 154,
++	155, 155, 155, 156, 156, 157, 157, 157, 158, 158,
++	158, 159, 159, 159, 160, 160, 160, 161, 161, 161,
++	162, 162, 162, 163, 163, 163, 164, 164, 164, 165,
++	165, 165, 166, 166, 166, 167, 167, 167, 167, 168,
++	168, 168, 169, 169, 169, 170, 170, 170, 171, 171,
++	171, 172, 172, 172, 173, 173, 173, 173, 174, 174,
++	174, 175, 175, 175, 176, 176, 176, 176, 177, 177,
++	177, 178, 178, 178, 179, 179, 179, 179, 180, 180,
++	180, 181, 181, 181, 182, 182, 182, 182, 183, 183,
++	183, 184, 184, 184, 184, 185, 185, 185, 186, 186,
++	186, 186, 187, 187, 187, 187, 188, 188, 188, 189,
++	189, 189, 189, 190, 190, 190, 191, 191, 191, 191,
++	192, 192, 192, 192, 193, 193, 193, 194, 194, 194,
++	194, 195, 195, 195, 195, 196, 196, 196, 196, 197,
++	197, 197, 198, 198, 198, 198, 199, 199, 199, 199,
++	200, 200, 200, 200, 201, 201, 201, 201, 202, 202,
++	202, 202, 203, 203, 203, 203, 204, 204, 204, 204,
++	205, 205, 205, 205, 206, 206, 206, 206, 207, 207,
++	207, 207, 208, 208, 208, 208, 209, 209, 209, 209,
++	210, 210, 210, 210, 211, 211, 211, 211, 212, 212,
++	212, 212, 213, 213, 213, 213, 214, 214, 214, 214,
++	214, 215, 215, 215, 215, 216, 216, 216, 216, 217,
++	217, 217, 217, 218, 218, 218, 218, 218, 219, 219,
++	219, 219, 220, 220, 220, 220, 221, 221, 221, 221,
++	221, 222, 222, 222, 222, 223, 223, 223, 223, 224,
++	224, 224, 224, 224, 225, 225, 225, 225, 226, 226,
++	226, 226, 226, 227, 227, 227, 227, 228, 228, 228,
++	228, 228, 229, 229, 229, 229, 230, 230, 230, 230,
++	230, 231, 231, 231, 231, 231, 232, 232, 232, 232,
++	233, 233, 233, 233, 233, 234, 234, 234, 234, 235,
++	235, 235, 235, 235, 236, 236, 236, 236, 236, 237,
++	237, 237, 237, 237, 238, 238, 238, 238, 239, 239,
++	239, 239, 239, 240, 240, 240, 240, 240, 241, 241,
++	241, 241, 241, 242, 242, 242, 242, 242, 243, 243,
++	243, 243, 243, 244, 244, 244, 244, 245, 245, 245,
++	245, 245, 246, 246, 246, 246, 246, 247, 247, 247,
++	247, 247, 248, 248, 248, 248, 248, 249, 249, 249,
++	249, 249, 250, 250, 250, 250, 250, 251, 251, 251,
++	251, 251, 251, 252, 252, 252, 252, 252, 253, 253,
++	253, 253, 253, 254, 254, 254, 254, 254, 255, 255,
++	255
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:412 */
++static const unsigned int vt_trans_volt[16] = {
++	6100000, 6014884, 5929767, 5844651, 5759535, 5674419, 5589302, 5504186,
++	5419070, 5333953, 5121163, 5050233, 4979302, 4908372, 4837442, 4780698,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:417 */
++static const unsigned int v0_trans_volt[16] = {
++	6100000, 6057442, 6014884, 5972326, 5929767, 5887209, 5844651, 5802093,
++	5759535, 5716977, 5674419, 5631860, 5589302, 5546744, 5504186, 5461628,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:422 */
++static const unsigned int v1_trans_volt [256] = {
++	0, 4, 8, 12, 16, 20, 23, 27,
++	31, 35, 39, 43, 47,	51,	55, 59,
++	63, 66, 70, 74, 78,	82, 86, 90,
++	94, 98, 102, 105, 109, 113, 117, 121,
++	125, 129, 133, 137, 141, 145, 148, 152,
++	156, 160, 164, 168, 172, 176, 180, 184,
++	188, 191, 195, 199, 203, 207, 211, 215,
++	219, 223, 227, 230, 234, 238, 242, 246,
++	250, 254, 258, 262, 266, 270, 273, 277,
++	281, 285, 289, 293, 297, 301, 305, 309,
++	313, 316, 320, 324, 328, 332, 336, 340,
++	344, 348, 352, 355, 359, 363, 367, 371,
++	375, 379, 383, 387, 391, 395, 398, 402,
++	406, 410, 414, 418, 422, 426, 430, 434,
++	438, 441, 445, 449, 453, 457, 461, 465,
++	469, 473, 477, 480, 484, 488, 492, 496,
++	500, 504, 508, 512, 516, 520, 523, 527,
++	531, 535, 539, 543, 547, 551, 555, 559,
++	563, 566, 570, 574, 578, 582, 586, 590,
++	594, 598, 602, 605, 609, 613, 617, 621,
++	625, 629, 633, 637, 641, 645, 648, 652,
++	656, 660, 664, 668, 672, 676, 680, 684,
++	688, 691, 695, 699, 703, 707, 711, 715,
++	719, 723, 727, 730, 734, 738, 742, 746,
++	750, 754, 758, 762, 766, 770, 773, 777,
++	781, 785, 789, 793, 797, 801, 805, 809,
++	813, 816, 820, 824, 828, 832, 836, 840,
++	844, 848, 852, 855, 859, 863, 867, 871,
++	875, 879, 883, 887, 891, 895, 898, 902,
++	906, 910, 914, 918, 922, 926, 930, 934,
++	938, 941, 945, 949, 953, 957, 961, 965,
++	969, 973, 977, 980, 984, 988, 992, 996,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:457 */
++static const unsigned int v203_trans_volt [256] = {
++	200, 203, 206, 209, 213, 216, 219, 222,
++	225, 228, 231, 234, 238, 241, 244, 247,
++	250, 253, 256, 259, 263, 266, 269, 272,
++	275, 278, 281, 284, 288, 291, 294, 297,
++	300, 303, 306, 309, 313, 316, 319, 322,
++	325, 328, 331, 334, 338, 341, 344, 347,
++	350, 353, 356, 359, 363, 366, 369, 372,
++	375, 378, 381, 384, 388, 391, 394, 397,
++	400, 403, 406, 409, 413, 416, 419, 422,
++	425, 428, 431, 434, 438, 441, 444, 447,
++	450, 453, 456, 459, 463, 466, 469, 472,
++	475, 478, 481, 484, 488, 491, 494, 497,
++	500, 503, 506, 509, 513, 516, 519, 522,
++	525, 528, 531, 534, 538, 541, 544, 547,
++	550, 553, 556, 559, 563, 566, 569, 572,
++	575, 578, 581, 584, 588, 591, 594, 597,
++	600, 603, 606, 609, 613, 616, 619, 622,
++	625, 628, 631, 634, 638, 641, 644, 647,
++	650, 653, 656, 659, 663, 666, 669, 672,
++	675, 678, 681, 684, 688, 691, 694, 697,
++	700, 703, 706, 709, 713, 716, 719, 722,
++	725, 728, 731, 734, 738, 741, 744, 747,
++	750, 753, 756, 759, 763, 766, 769, 772,
++	775, 778, 781, 784, 788, 791, 794, 797,
++	800, 803, 806, 809, 813, 816, 819, 822,
++	825, 828, 831, 834, 838, 841, 844, 847,
++	850, 853, 856, 859, 863, 866, 869, 872,
++	875, 878, 881, 884, 888, 891, 894, 897,
++	900, 903, 906, 909, 913, 916, 919, 922,
++	925, 928, 931, 934, 938, 941, 944, 947,
++	950, 953, 956, 959, 963, 966, 969, 972,
++	975, 978, 981, 984, 988, 991, 994, 997,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:492 */
++static const unsigned int v255_trans_volt [513] = {
++	4475698, 4468605, 4461512, 4454419, 4447326, 4440233, 4433140, 4426047, 4418953, 4411860,
++	4404767, 4397674, 4390581, 4383488, 4376395, 4369302, 4362209, 4355116, 4348023, 4340930,
++	4333837, 4326744, 4319651, 4312558, 4305465, 4298372, 4291279, 4284186, 4277093, 4270000,
++	4262907, 4255814, 4248721, 4241628, 4234535, 4227442, 4220349, 4213256, 4206163, 4199070,
++	4191977, 4184884, 4177791, 4170698, 4163605, 4156512, 4149419, 4142326, 4135233, 4128140,
++	4121047, 4113953, 4106860, 4099767, 4092674, 4085581, 4078488, 4071395, 4064302, 4057209,
++	4050116, 4043023, 4035930, 4028837, 4021744, 4014651, 4007558, 4000465, 3993372, 3986279,
++	3979186, 3972093, 3965000, 3957907, 3950814, 3943721, 3936628, 3929535, 3922442, 3915349,
++	3908256, 3901163, 3894070, 3886977, 3879884, 3872791, 3865698, 3858605, 3851512, 3844419,
++	3837326, 3830233, 3823140, 3816047, 3808953, 3801860, 3794767, 3787674, 3780581, 3773488,
++	3766395, 3759302, 3752209, 3745116, 3738023, 3730930, 3723837, 3716744, 3709651, 3702558,
++	3695465, 3688372, 3681279, 3674186, 3667093, 3660000, 3652907, 3645814, 3638721, 3631628,
++	3624535, 3617442, 3610349, 3603256, 3596163, 3589070, 3581977, 3574884, 3567791, 3560698,
++	3553605, 3546512, 3539419, 3532326, 3525233, 3518140, 3511047, 3503953, 3496860, 3489767,
++	3482674, 3475581, 3468488, 3461395, 3454302, 3447209, 3440116, 3433023, 3425930, 3418837,
++	3411744, 3404651, 3397558, 3390465, 3383372, 3376279, 3369186, 3362093, 3355000, 3347907,
++	3340814, 3333721, 3326628, 3319535, 3312442, 3305349, 3298256, 3291163, 3284070, 3276977,
++	3269884, 3262791, 3255698, 3248605, 3241512, 3234419, 3227326, 3220233, 3213140, 3206047,
++	3198953, 3191860, 3184767, 3177674, 3170581, 3163488, 3156395, 3149302, 3142209, 3135116,
++	3128023, 3120930, 3113837, 3106744, 3099651, 3092558, 3085465, 3078372, 3071279, 3064186,
++	3057093, 3050000, 3042907, 3035814, 3028721, 3021628, 3014535, 3007442, 3000349, 2993256,
++	2986163, 2979070, 2971977, 2964884, 2957791, 2950698, 2943605, 2936512, 2929419, 2922326,
++	2915233, 2908140, 2901047, 2893953, 2886860, 2879767, 2872674, 2865581, 2858488, 2851395,
++	2844302, 2837209, 2830116, 2823023, 2815930, 2808837, 2801744, 2794651, 2787558, 2780465,
++	2773372, 2766279, 2759186, 2752093, 2745000, 2737907, 2730814, 2723721, 2716628, 2709535,
++	2702442, 2695349, 2688256, 2681163, 2674070, 2666977, 2659884, 2652791, 2645698, 2638605,
++	2631512, 2624419, 2617326, 2610233, 2603140, 2596047, 2588953, 2581860, 2574767, 2567674,
++	2560581, 2553488, 2546395, 2539302, 2532209, 2525116, 2518023, 2510930, 2503837, 2496744,
++	2489651, 2482558, 2475465, 2468372, 2461279, 2454186, 2447093, 2440000, 2432907, 2425814,
++	2418721, 2411628, 2404535, 2397442, 2390349, 2383256, 2376163, 2369070, 2361977, 2354884,
++	2347791, 2340698, 2333605, 2326512, 2319419, 2312326, 2305233, 2298140, 2291047, 2283953,
++	2276860, 2269767, 2262674, 2255581, 2248488, 2241395, 2234302, 2227209, 2220116, 2213023,
++	2205930, 2198837, 2191744, 2184651, 2177558, 2170465, 2163372, 2156279, 2149186, 2142093,
++	2135000, 2127907, 2120814, 2113721, 2106628, 2099535, 2092442, 2085349, 2078256, 2071163,
++	2064070, 2056977, 2049884, 2042791, 2035698, 2028605, 2021512, 2014419, 2007326, 2000233,
++	1993140, 1986047, 1978953, 1971860, 1964767, 1957674, 1950581, 1943488, 1936395, 1929302,
++	1922209, 1915116, 1908023, 1900930, 1893837, 1886744, 1879651, 1872558, 1865465, 1858372,
++	1851279, 1844186, 1837093, 1830000, 1822907, 1815814, 1808721, 1801628, 1794535, 1787442,
++	1780349, 1773256, 1766163, 1759070, 1751977, 1744884, 1737791, 1730698, 1723605, 1716512,
++	1709419, 1702326, 1695233, 1688140, 1681047, 1673953, 1666860, 1659767, 1652674, 1645581,
++	1638488, 1631395, 1624302, 1617209, 1610116, 1603023, 1595930, 1588837, 1581744, 1574651,
++	1567558, 1560465, 1553372, 1546279, 1539186, 1532093, 1525000, 1517907, 1510814, 1503721,
++	1496628, 1489535, 1482442, 1475349, 1468256, 1461163, 1454070, 1446977, 1439884, 1432791,
++	1425698, 1418605, 1411512, 1404419, 1397326, 1390233, 1383140, 1376047, 1368953, 1361860,
++	1354767, 1347674, 1340581, 1333488, 1326395, 1319302, 1312209, 1305116, 1298023, 1290930,
++	1283837, 1276744, 1269651, 1262558, 1255465, 1248372, 1241279, 1234186, 1227093, 1220000,
++	1212907, 1205814, 1198721, 1191628, 1184535, 1177442, 1170349, 1163256, 1156163, 1149070,
++	1141977, 1134884, 1127791, 1120698, 1113605, 1106512, 1099419, 1092326, 1085233, 1078140,
++	1071047, 1063953, 1056860, 1049767, 1042674, 1035581, 1028488, 1021395, 1014302, 1007209,
++	1000116, 993023, 985930, 978837, 971744, 964651, 957558, 950465, 943372, 936279,
++	929186, 922093, 915000, 907907, 900814, 893721, 886628, 879535, 872442, 865349,
++	858256, 851163, 844070,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:547 */
++static const short int_tbl_v1_v7[5] = {
++	171, 341, 512, 683, 853,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:552 */
++static const short int_tbl_v7_v11[3] = {
++	256, 512, 768
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:557 */
++static const short int_tbl_v11_v23[11] = {
++	85, 171, 256, 341, 427, 512, 597, 683,
++	768, 853, 939,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:563 */
++static const short int_tbl_v23_v35[11] = {
++	85, 171, 256, 341, 427, 512, 597, 683,
++	768, 853, 939,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:569 */
++static const short int_tbl_v35_v51[15] = {
++	64, 128, 192, 256, 320, 384, 448, 512,
++	576, 640, 704, 768, 832, 896, 960,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:574 */
++static const short int_tbl_v51_v87[35] = {
++	28,	57,	85,	114, 142, 171, 199, 228,
++	256, 284, 313, 341, 370, 398, 427, 455,
++	484, 512, 540, 569, 597, 626, 654, 683,
++	711, 740, 768, 796, 825, 853, 882, 910,
++	939, 967, 996,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:582 */
++static const short int_tbl_v87_v151[63] = {
++	16,	32, 48, 64, 80, 96, 112, 128,
++	144, 160, 176, 192, 208, 224, 240, 256,
++	272, 288, 304, 320, 336, 352, 368, 384,
++	400, 416, 432, 448, 464, 480, 496, 512,
++	528, 544, 560, 576, 592, 608, 624, 640,
++	656, 672, 688, 704, 720, 736, 752, 768,
++	784, 800, 816, 832, 848, 864, 880, 896,
++	912, 928, 944, 960, 976, 992, 1008,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:593 */
++static const short int_tbl_v151_v203[51] = {
++	20, 39, 59, 79, 98, 118, 138, 158,
++	177, 197, 217, 236, 256, 276, 295, 315,
++	335, 354, 374, 394, 414, 433, 453, 473,
++	492, 512, 532, 551, 571, 591, 610, 630,
++	650, 670, 689, 709, 729, 748, 768, 788,
++	807, 827, 847, 866, 886, 906, 926, 945,
++	965, 985, 1004,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:603 */
++static const short int_tbl_v203_v255[51] = {
++	20, 39, 59, 79, 98, 118, 138, 158,
++	177, 197, 217, 236, 256, 276, 295, 315,
++	335, 354, 374, 394, 414, 433, 453, 473,
++	492, 512, 532, 551, 571, 591, 610, 630,
++	650, 670, 689, 709, 729, 748, 768, 788,
++	807, 827, 847, 866, 886, 906, 926, 945,
++	965, 985, 1004,
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:613 */
++static const signed char a3_da_rtbl10nit_latest[10] = {0, 19, 18, 16, 13, 10, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:614 */
++static const signed char a3_da_rtbl11nit_latest[10] = {0, 18, 17, 15, 12, 9, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:615 */
++static const signed char a3_da_rtbl12nit_latest[10] = {0, 17, 16, 14, 12, 9, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:616 */
++static const signed char a3_da_rtbl13nit_latest[10] = {0, 16, 15, 13, 11, 8, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:617 */
++static const signed char a3_da_rtbl14nit_latest[10] = {0, 16, 15, 13, 11, 8, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:618 */
++static const signed char a3_da_rtbl15nit_latest[10] = {0, 16, 15, 13, 11, 8, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:619 */
++static const signed char a3_da_rtbl16nit_latest[10] = {0, 15, 14, 12, 10, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:620 */
++static const signed char a3_da_rtbl17nit_latest[10] = {0, 15, 14, 12, 9, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:621 */
++static const signed char a3_da_rtbl19nit_latest[10] = {0, 14, 13, 11, 8, 6, 4, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:622 */
++static const signed char a3_da_rtbl20nit_latest[10] = {0, 14, 13, 11, 8, 6, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:623 */
++static const signed char a3_da_rtbl21nit_latest[10] = {0, 13, 12, 10, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:624 */
++static const signed char a3_da_rtbl22nit_latest[10] = {0, 13, 12, 10, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:625 */
++static const signed char a3_da_rtbl24nit_latest[10] = {0, 12, 11, 9, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:626 */
++static const signed char a3_da_rtbl25nit_latest[10] = {0, 12, 11, 9, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:627 */
++static const signed char a3_da_rtbl27nit_latest[10] = {0, 11, 10, 8, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:628 */
++static const signed char a3_da_rtbl29nit_latest[10] = {0, 10, 9, 7, 5, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:629 */
++static const signed char a3_da_rtbl30nit_latest[10] = {0, 10, 9, 7, 5, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:630 */
++static const signed char a3_da_rtbl32nit_latest[10] = {0, 10, 9, 7, 5, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:631 */
++static const signed char a3_da_rtbl34nit_latest[10] = {0, 10, 9, 6, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:632 */
++static const signed char a3_da_rtbl37nit_latest[10] = {0, 10, 9, 6, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:633 */
++static const signed char a3_da_rtbl39nit_latest[10] = {0, 9, 8, 6, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:634 */
++static const signed char a3_da_rtbl41nit_latest[10] = {0, 9, 8, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:635 */
++static const signed char a3_da_rtbl44nit_latest[10] = {0, 8, 7, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:636 */
++static const signed char a3_da_rtbl47nit_latest[10] = {0, 8, 7, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:637 */
++static const signed char a3_da_rtbl50nit_latest[10] = {0, 6, 5, 4, 3, 2, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:638 */
++static const signed char a3_da_rtbl53nit_latest[10] = {0, 7, 6, 4, 3, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:639 */
++static const signed char a3_da_rtbl56nit_latest[10] = {0, 6, 5, 3, 2, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:640 */
++static const signed char a3_da_rtbl60nit_latest[10] = {0, 7, 6, 4, 2, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:641 */
++static const signed char a3_da_rtbl64nit_latest[10] = {0, 7, 6, 4, 2, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:642 */
++static const signed char a3_da_rtbl68nit_latest[10] = {0, 7, 6, 3, 3, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:643 */
++static const signed char a3_da_rtbl72nit_latest[10] = {0, 6, 5, 3, 3, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:644 */
++static const signed char a3_da_rtbl77nit_latest[10] = {0, 7, 6, 4, 3, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:645 */
++static const signed char a3_da_rtbl82nit_latest[10] = {0, 8, 7, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:646 */
++static const signed char a3_da_rtbl87nit_latest[10] = {0, 7, 6, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:647 */
++static const signed char a3_da_rtbl93nit_latest[10] = {0, 7, 6, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:648 */
++static const signed char a3_da_rtbl98nit_latest[10] = {0, 6, 5, 4, 2, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:649 */
++static const signed char a3_da_rtbl105nit_latest[10] = {0, 6, 5, 3, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:650 */
++static const signed char a3_da_rtbl111nit_latest[10] = {0, 6, 5, 3, 2, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:651 */
++static const signed char a3_da_rtbl119nit_latest[10] = {0, 6, 5, 3, 2, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:652 */
++static const signed char a3_da_rtbl126nit_latest[10] = {0, 6, 4, 2, 1, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:653 */
++static const signed char a3_da_rtbl134nit_latest[10] = {0, 6, 4, 3, 1, 1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:654 */
++static const signed char a3_da_rtbl143nit_latest[10] = {0, 6, 4, 3, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:655 */
++static const signed char a3_da_rtbl152nit_latest[10] = {0, 5, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:656 */
++static const signed char a3_da_rtbl162nit_latest[10] = {0, 4, 3, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:657 */
++static const signed char a3_da_rtbl172nit_latest[10] = {0, 4, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:658 */
++static const signed char a3_da_rtbl183nit_latest[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:659 */
++static const signed char a3_da_rtbl195nit_latest[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:660 */
++static const signed char a3_da_rtbl207nit_latest[10] = {0, 2, 2, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:661 */
++static const signed char a3_da_rtbl220nit_latest[10] = {0, 2, 2, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:662 */
++static const signed char a3_da_rtbl234nit_latest[10] = {0, 2, 1, 1, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:663 */
++static const signed char a3_da_rtbl249nit_latest[10] = {0, 3, 2, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:664 */
++static const signed char a3_da_rtbl265nit_latest[10] = {0, 2, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:665 */
++static const signed char a3_da_rtbl282nit_latest[10] = {0, 2, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:666 */
++static const signed char a3_da_rtbl300nit_latest[10] = {0, 2, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:667 */
++static const signed char a3_da_rtbl316nit_latest[10] = {0, 2, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:668 */
++static const signed char a3_da_rtbl333nit_latest[10] = {0, 2, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:669 */
++static const signed char a3_da_rtbl350nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:670 */
++static const signed char a3_da_rtbl357nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:671 */
++static const signed char a3_da_rtbl365nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:672 */
++static const signed char a3_da_rtbl372nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:673 */
++static const signed char a3_da_rtbl380nit_latest[10] = {0, 2, 1, 1, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:674 */
++static const signed char a3_da_rtbl387nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:675 */
++static const signed char a3_da_rtbl395nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:676 */
++static const signed char a3_da_rtbl403nit_latest[10] = {0, 1, 1, 1, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:677 */
++static const signed char a3_da_rtbl412nit_latest[10] = {0, 1, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:678 */
++static const signed char a3_da_rtbl420nit_latest[10] = {0, 1, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:679 */
++static const signed char a3_da_rtbl443nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:680 */
++static const signed char a3_da_rtbl465nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:681 */
++static const signed char a3_da_rtbl488nit_latest[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:682 */
++static const signed char a3_da_rtbl510nit_latest[10] = {0, 1, 1, 1, 0, 0, 0, 1, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:683 */
++static const signed char a3_da_rtbl533nit_latest[10] = {0, 0, 0, 0, 0, 0, 0, 0, -1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:684 */
++static const signed char a3_da_rtbl555nit_latest[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:685 */
++static const signed char a3_da_rtbl578nit_latest[10] = {0, 0, 0, 0, 0, 0, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:686 */
++static const signed char a3_da_rtbl600nit_latest[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:688 */
++static const signed char a3_da_ctbl10nit_latest[30] = {0, 0, 0, -2, 1, -3, -14, -1, -13, -27, 0, -18, -17, -2, -14, -15, -1, -13, -7, -2, -7, 0, 0, 0, -1, 1, -1, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:689 */
++static const signed char a3_da_ctbl11nit_latest[30] = {0, 0, 0, -2, 1, -3, -14, -1, -13, -27, -2, -20, -17, -2, -14, -15, 1, -13, -6, 0, -5, 0, 2, 0, -2, 0, -2, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:690 */
++static const signed char a3_da_ctbl12nit_latest[30] = {0, 0, 0, -2, 1, -3, -14, 1, -13, -20, 3, -13, -17, -2, -14, -19, -3, -15, -2, 3, -3, -2, 1, -1, -1, 0, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:691 */
++static const signed char a3_da_ctbl13nit_latest[30] = {0, 0, 0, -2, 1, -3, -12, 3, -11, -21, 2, -14, -16, -2, -12, -13, 1, -12, -5, 1, -5, -2, 0, -2, -1, 0, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:692 */
++static const signed char a3_da_ctbl14nit_latest[30] = {0, 0, 0, -2, 1, -3, -13, 4, -12, -21, 1, -19, -16, -4, -13, -13, 0, -12, -6, 0, -6, -1, 1, -1, 0, 1, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:693 */
++static const signed char a3_da_ctbl15nit_latest[30] = {0, 0, 0, -2, 1, -3, -17, -1, -14, -23, 1, -18, -18, -2, -15, -15, -3, -13, -6, -1, -6, -1, 1, -1, 0, 1, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:694 */
++static const signed char a3_da_ctbl16nit_latest[30] = {0, 0, 0, -2, 1, -3, -20, -1, -16, -20, 3, -17, -18, -4, -16, -10, 1, -8, -6, -1, -6, -2, 0, -2, 0, 1, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:695 */
++static const signed char a3_da_ctbl17nit_latest[30] = {0, 0, 0, -2, 1, -3, -20, -1, -16, -27, -4, -22, -13, -1, -11, -11, 1, -9, -6, -1, -6, -1, 0, -1, -1, 0, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:696 */
++static const signed char a3_da_ctbl19nit_latest[30] = {0, 0, 0, -2, 1, -3, -25, -1, -16, -27, -4, -22, -13, 1, -12, -9, 1, -8, -5, 0, -4, -1, 0, -1, -2, 0, -2, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:697 */
++static const signed char a3_da_ctbl20nit_latest[30] = {0, 0, 0, -2, 1, -3, -26, 0, -19, -26, -4, -21, -14, -2, -13, -12, -2, -10, -4, 1, -3, 1, 1, 1, -2, 0, -2, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:698 */
++static const signed char a3_da_ctbl21nit_latest[30] = {0, 0, 0, -2, 1, -3, -27, -1, -18, -25, -2, -19, -14, -3, -13, -8, 2, -7, -4, 1, -3, 0, 1, 0, -1, 0, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:699 */
++static const signed char a3_da_ctbl22nit_latest[30] = {0, 0, 0, -2, 1, -3, -29, 0, -19, -26, -3, -19, -15, -2, -14, -8, 1, -7, -4, 1, -3, 1, 2, 1, -1, 0, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:700 */
++static const signed char a3_da_ctbl24nit_latest[30] = {0, 0, 0, -2, 1, -3, -31, -1, -21, -18, 3, -14, -16, -3, -14, -8, 0, -7, -4, 0, -3, 1, 2, 1, -1, 0, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:701 */
++static const signed char a3_da_ctbl25nit_latest[30] = {0, 0, 0, -2, 1, -3, -31, -1, -21, -19, 3, -14, -17, -4, -16, -8, -1, -7, -3, 1, -2, 0, 1, 0, -1, 0, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:702 */
++static const signed char a3_da_ctbl27nit_latest[30] = {0, 0, 0, -2, 1, -3, -32, -1, -22, -20, 2, -15, -13, -2, -12, -6, 0, -6, -2, 2, -2, 0, 1, 0, -1, 0, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:703 */
++static const signed char a3_da_ctbl29nit_latest[30] = {0, 0, 0, -2, 1, -3, -31, -1, -20, -20, 3, -17, -7, 4, -7, -6, -1, -6, -2, 2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:704 */
++static const signed char a3_da_ctbl30nit_latest[30] = {0, 0, 0, -2, 1, -3, -31, -1, -20, -20, 1, -16, -8, 3, -7, -6, -1, -6, -2, 2, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:705 */
++static const signed char a3_da_ctbl32nit_latest[30] = {0, 0, 0, -2, 1, -3, -32, -2, -21, -23, -1, -18, -11, -2, -11, -4, 3, -3, -2, 1, -1, 0, 0, -1, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:706 */
++static const signed char a3_da_ctbl34nit_latest[30] = {0, 0, 0, -2, 1, -3, -36, -2, -23, -22, -1, -18, -4, 4, -4, -4, 3, -3, -2, 0, -2, 0, 0, -1, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:707 */
++static const signed char a3_da_ctbl37nit_latest[30] = {0, 0, 0, -2, 1, -3, -38, -4, -25, -23, -4, -19, -4, 3, -3, -4, 2, -4, -2, 0, -2, -1, -1, -1, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:708 */
++static const signed char a3_da_ctbl39nit_latest[30] = {0, 0, 0, -2, 1, -2, -40, -5, -26, -24, -5, -20, -6, 1, -5, -3, 2, -3, -2, 0, -2, -1, 0, 0, -1, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:709 */
++static const signed char a3_da_ctbl41nit_latest[30] = {0, 0, 0, -2, 1, -2, -40, -5, -26, -16, 4, -13, -5, 1, -5, -4, 1, -3, -4, -2, -4, 0, 1, 1, -1, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:710 */
++static const signed char a3_da_ctbl44nit_latest[30] = {0, 0, 0, -3, 3, -2, -33, 4, -20, -17, 3, -13, -5, 0, -5, -5, 0, -4, -4, -3, -4, 2, 2, 2, -2, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:711 */
++static const signed char a3_da_ctbl47nit_latest[30] = {0, 0, 0, -3, 4, -1, -34, 3, -20, -18, 1, -14, -7, -2, -6, -4, 0, -4, -3, -1, -2, 0, 0, 0, -1, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:712 */
++static const signed char a3_da_ctbl50nit_latest[30] = {0, 0, 0, -3, 4, 0, -45, 3, -23, -14, 0, -11, -3, 0, -3, 0, 4, -1, -2, -1, -2, 0, -1, -1, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:713 */
++static const signed char a3_da_ctbl53nit_latest[30] = {0, 0, 0, -3, 4, -1, -30, 5, -20, -17, 1, -14, -3, 3, -3, -5, 0, -3, -2, 0, -1, 0, -1, -1, -2, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:714 */
++static const signed char a3_da_ctbl56nit_latest[30] = {0, 0, 0, -2, 4, 0, -26, 4, -19, -16, 3, -13, -1, 4, -1, -1, 4, -1, -1, 1, 0, -1, -2, -1, -2, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:715 */
++static const signed char a3_da_ctbl60nit_latest[30] = {0, 0, 0, -5, 3, -2, -38, -3, -27, -14, -1, -12, -1, 4, -1, -1, 3, -1, -2, 0, -1, -1, -2, -1, -2, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:716 */
++static const signed char a3_da_ctbl64nit_latest[30] = {0, 0, 0, -5, 2, -3, -38, -4, -28, -15, -2, -12, -1, 3, -1, -2, 3, -1, -2, -1, -1, 1, 0, 0, -2, -1, -2, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:717 */
++static const signed char a3_da_ctbl68nit_latest[30] = {0, 0, 0, -6, 2, -4, -38, -4, -27, -7, 4, -6, -6, -2, -6, -3, 2, -2, -1, 0, -1, 0, 0, 0, -2, -2, -2, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:718 */
++static const signed char a3_da_ctbl72nit_latest[30] = {0, 0, 0, -6, 2, -4, -27, 5, -18, -7, 3, -7, -1, 4, -1, -5, -1, -3, -1, -1, -2, 0, 0, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:719 */
++static const signed char a3_da_ctbl77nit_latest[30] = {0, 0, 0, -7, 2, -4, -30, 2, -22, -9, 2, -8, -5, -1, -5, -6, -2, -4, -1, 0, -1, 0, 0, 1, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:720 */
++static const signed char a3_da_ctbl82nit_latest[30] = {0, 0, 0, -8, 3, -5, -33, -2, -25, -11, -1, -9, -7, -2, -6, -5, -2, -4, -3, -2, -2, 1, 1, 0, -1, -1, -1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:721 */
++static const signed char a3_da_ctbl87nit_latest[30] = {0, 0, 0, -8, 3, -5, -34, -3, -26, -12, -3, -11, -6, -2, -5, -3, 1, -2, -4, -4, -4, 1, 2, 2, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:722 */
++static const signed char a3_da_ctbl93nit_latest[30] = {0, 0, 0, -10, 2, -7, -36, -4, -28, -11, -4, -10, -4, 1, -3, -5, -2, -4, -3, -3, -3, 2, 2, 2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:723 */
++static const signed char a3_da_ctbl98nit_latest[30] = {0, 0, 0, -9, 0, -7, -27, 3, -21, -10, -3, -9, -3, 1, -3, -1, 2, 0, -3, -3, -3, 0, 1, 1, -1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:724 */
++static const signed char a3_da_ctbl105nit_latest[30] = {0, 0, 0, -9, 0, -8, -28, 2, -21, -4, 3, -3, -6, -2, -6, -3, 0, -1, -2, 0, -2, 0, -1, 0, -1, -1, -1, 1, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:725 */
++static const signed char a3_da_ctbl111nit_latest[30] = {0, 0, 0, -11, 0, -8, -29, 0, -23, -5, 2, -3, -5, -2, -5, -3, 0, -2, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:726 */
++static const signed char a3_da_ctbl119nit_latest[30] = {0, 0, 0, -12, 0, -9, -32, -3, -25, -5, 1, -4, -2, 3, -1, -2, 0, -1, -1, -1, -2, -1, 0, 0, 0, 1, 1, 1, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:727 */
++static const signed char a3_da_ctbl126nit_latest[30] = {0, 0, 0, -13, -1, -10, -32, -4, -25, -5, 0, -4, -2, 3, -1, 0, 2, 0, 0, 0, -2, 0, 1, 1, 1, 1, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:728 */
++static const signed char a3_da_ctbl134nit_latest[30] = {0, 0, 0, -14, -2, -11, -24, 3, -18, -7, -2, -6, -4, 0, -4, -3, 0, -1, 0, 0, 0, -1, -1, -1, 1, 2, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:729 */
++static const signed char a3_da_ctbl143nit_latest[30] = {0, 0, 0, -15, -2, -11, -27, -1, -21, -7, -4, -7, -4, 1, -3, 0, 2, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:730 */
++static const signed char a3_da_ctbl152nit_latest[30] = {0, 0, 0, -16, -3, -12, -28, -3, -22, -2, 2, -1, -6, -2, -5, -1, 1, 0, 2, 2, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:731 */
++static const signed char a3_da_ctbl162nit_latest[30] = {0, 0, 0, -17, -4, -13, -18, 3, -15, -2, 1, -2, 0, 3, 0, -2, -1, -2, 1, 2, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:732 */
++static const signed char a3_da_ctbl172nit_latest[30] = {0, 0, 0, -17, -4, -13, -18, 1, -16, -2, 1, -1, 0, 2, -1, 0, 1, 1, 1, 2, 1, 1, 2, 1, 1, 0, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:733 */
++static const signed char a3_da_ctbl183nit_latest[30] = {0, 0, 0, -5, 4, -4, -20, -1, -17, -2, 0, -2, -1, 2, 0, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:734 */
++static const signed char a3_da_ctbl195nit_latest[30] = {0, 0, 0, -6, 3, -5, -21, -3, -18, -3, -1, -2, -1, 1, -1, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:735 */
++static const signed char a3_da_ctbl207nit_latest[30] = {0, 0, 0, -5, 3, -4, -11, 4, -10, -3, -2, -2, -1, 1, -1, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 0, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:736 */
++static const signed char a3_da_ctbl220nit_latest[30] = {0, 0, 0, -6, 3, -5, -12, 2, -11, -3, -2, -2, -1, 0, -2, 1, 1, 2, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:737 */
++static const signed char a3_da_ctbl234nit_latest[30] = {0, 0, 0, -6, 1, -6, -11, 2, -9, 1, 2, 0, -3, -1, -2, -1, -1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:738 */
++static const signed char a3_da_ctbl249nit_latest[30] = {0, 0, 0, -10, 0, -8, -17, -2, -13, -3, -2, -3, -4, -3, -3, -1, 0, -1, 0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:739 */
++static const signed char a3_da_ctbl265nit_latest[30] = {0, 0, 0, -9, 0, -7, -6, 5, -7, -3, -1, -2, -1, 0, -1, -2, -2, -2, 1, 1, 1, 2, 3, 3, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:740 */
++static const signed char a3_da_ctbl282nit_latest[30] = {0, 0, 0, -10, -1, -8, -7, 3, -8, -3, -2, -2, 2, 4, 2, -1, -2, -1, 0, 1, 1, 2, 3, 2, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:741 */
++static const signed char a3_da_ctbl300nit_latest[30] = {0, 0, 0, -11, -2, -9, -7, 2, -8, 3, 3, 3, 1, 2, 1, -1, -1, -1, 0, 1, 0, 2, 2, 3, 1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:742 */
++static const signed char a3_da_ctbl316nit_latest[30] = {0, 0, 0, -3, 4, -3, -10, -2, -10, -1, -1, -2, -1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:743 */
++static const signed char a3_da_ctbl333nit_latest[30] = {0, 0, 0, -13, -3, -11, -11, -3, -11, -1, -1, -2, 2, 3, 2, -1, -1, -1, 2, 2, 2, 1, 2, 2, 0, 0, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:744 */
++static const signed char a3_da_ctbl350nit_latest[30] = {0, 0, 0, -13, -4, -10, -1, 4, -3, 4, 4, 2, 0, 1, 2, 0, -1, -1, 0, 0, 0, 1, 2, 2, 1, 0, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:745 */
++static const signed char a3_da_ctbl357nit_latest[30] = {0, 0, 0, -14, -4, -11, -1, 4, -3, 4, 4, 3, 0, 1, 1, 0, -1, -1, 1, 1, 1, 2, 3, 3, 1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:746 */
++static const signed char a3_da_ctbl365nit_latest[30] = {0, 0, 0, -14, -5, -11, -1, 4, -3, 4, 4, 3, 0, 1, 1, 0, -1, -1, 1, 1, 1, 2, 3, 3, 1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:747 */
++static const signed char a3_da_ctbl372nit_latest[30] = {0, 0, 0, -14, -5, -11, -1, 3, -3, 4, 4, 3, 0, 1, 1, 0, -1, -1, 1, 1, 1, 2, 3, 3, 1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:748 */
++static const signed char a3_da_ctbl380nit_latest[30] = {0, 0, 0, -15, -5, -12, -5, 1, -6, -4, -3, -3, 0, 0, 1, 0, -1, -1, 1, 1, 0, 2, 3, 3, 1, 0, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:749 */
++static const signed char a3_da_ctbl387nit_latest[30] = {0, 0, 0, -13, -5, -11, -1, 3, -3, 4, 4, 3, 0, 1, 1, 0, -1, 0, 0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:750 */
++static const signed char a3_da_ctbl395nit_latest[30] = {0, 0, 0, -13, -5, -10, -1, 3, -3, 3, 3, 3, 3, 5, 3, -1, -2, -2, 0, 1, 1, 2, 1, 1, -1, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:751 */
++static const signed char a3_da_ctbl403nit_latest[30] = {0, 0, 0, -3, 3, -3, -5, 0, -6, -4, -4, -3, 2, 4, 2, 0, -1, -1, 1, 2, 2, 2, 1, 1, -1, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:752 */
++static const signed char a3_da_ctbl412nit_latest[30] = {0, 0, 0, -3, 2, -3, -5, -1, -7, 0, 0, 0, 0, 1, 0, -1, -1, -1, 0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:753 */
++static const signed char a3_da_ctbl420nit_latest[30] = {0, 0, 0, -4, 1, -4, -5, -1, -6, 1, 0, 0, 0, 2, 1, -2, -2, -2, 1, 1, 1, 1, 2, 2, 1, 1, 1, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:754 */
++static const signed char a3_da_ctbl443nit_latest[30] = {0, 0, 0, -4, 1, -4, -6, -3, -7, 4, 4, 3, -1, 0, 0, -1, -1, -1, 0, 1, 0, 2, 2, 3, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:755 */
++static const signed char a3_da_ctbl465nit_latest[30] = {0, 0, 0, -5, 0, -5, 0, 3, -1, -1, -2, -2, 2, 2, 2, -1, -1, -1, 0, 0, 0, 1, 1, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:756 */
++static const signed char a3_da_ctbl488nit_latest[30] = {0, 0, 0, -7, -2, -6, 0, 2, -1, 2, 2, 2, 1, 1, 1, -1, 0, 0, 0, 0, 0, 2, 1, 2, -1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:757 */
++static const signed char a3_da_ctbl510nit_latest[30] = {0, 0, 0, 1, 4, 1, -5, -2, -4, 0, -1, -1, -2, -2, -2, 0, 0, 0, 2, 2, 2, 0, -1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:758 */
++static const signed char a3_da_ctbl533nit_latest[30] = {0, 0, 0, -7, -3, -6, 3, 4, 2, 0, -1, -1, 0, 0, 1, -1, 0, -1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:759 */
++static const signed char a3_da_ctbl555nit_latest[30] = {0, 0, 0, 1, 2, 1, -3, -2, -3, 3, 3, 2, -2, -1, 0, 0, 0, -1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:760 */
++static const signed char a3_da_ctbl578nit_latest[30] = {0, 0, 0, 0, 1, 0, 0, 1, -1, -2, -2, -2, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:761 */
++static const signed char a3_da_ctbl600nit_latest[30] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:763 */
++static const struct SmtDimInfo s6e36w4x01_dimming_info_latest[MAX_BR_INFO] = {
++	{.br = 10, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl10nit_latest, .cTbl = a3_da_ctbl10nit_latest, .way = W1},
++	{.br = 11, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl11nit_latest, .cTbl = a3_da_ctbl11nit_latest, .way = W1},
++	{.br = 12, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl12nit_latest, .cTbl = a3_da_ctbl12nit_latest, .way = W1},
++	{.br = 13, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl13nit_latest, .cTbl = a3_da_ctbl13nit_latest, .way = W1},
++	{.br = 14, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl14nit_latest, .cTbl = a3_da_ctbl14nit_latest, .way = W1},
++	{.br = 15, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl15nit_latest, .cTbl = a3_da_ctbl15nit_latest, .way = W1},
++	{.br = 16, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl16nit_latest, .cTbl = a3_da_ctbl16nit_latest, .way = W1},
++	{.br = 17, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl17nit_latest, .cTbl = a3_da_ctbl17nit_latest, .way = W1},
++	{.br = 19, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl19nit_latest, .cTbl = a3_da_ctbl19nit_latest, .way = W1},
++	{.br = 20, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl20nit_latest, .cTbl = a3_da_ctbl20nit_latest, .way = W1},
++	{.br = 21, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl21nit_latest, .cTbl = a3_da_ctbl21nit_latest, .way = W1},
++	{.br = 22, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl22nit_latest, .cTbl = a3_da_ctbl22nit_latest, .way = W1},
++	{.br = 24, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl24nit_latest, .cTbl = a3_da_ctbl24nit_latest, .way = W1},
++	{.br = 25, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl25nit_latest, .cTbl = a3_da_ctbl25nit_latest, .way = W1},
++	{.br = 27, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl27nit_latest, .cTbl = a3_da_ctbl27nit_latest, .way = W1},
++	{.br = 29, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl29nit_latest, .cTbl = a3_da_ctbl29nit_latest, .way = W1},
++	{.br = 30, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl30nit_latest, .cTbl = a3_da_ctbl30nit_latest, .way = W1},
++	{.br = 32, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl32nit_latest, .cTbl = a3_da_ctbl32nit_latest, .way = W1},
++	{.br = 34, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl34nit_latest, .cTbl = a3_da_ctbl34nit_latest, .way = W1},
++	{.br = 37, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl37nit_latest, .cTbl = a3_da_ctbl37nit_latest, .way = W1},
++	{.br = 39, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl39nit_latest, .cTbl = a3_da_ctbl39nit_latest, .way = W1},
++	{.br = 41, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl41nit_latest, .cTbl = a3_da_ctbl41nit_latest, .way = W1},
++	{.br = 44, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl44nit_latest, .cTbl = a3_da_ctbl44nit_latest, .way = W1},
++	{.br = 47, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl47nit_latest, .cTbl = a3_da_ctbl47nit_latest, .way = W1},
++	{.br = 50, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl50nit_latest, .cTbl = a3_da_ctbl50nit_latest, .way = W1},
++	{.br = 53, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl53nit_latest, .cTbl = a3_da_ctbl53nit_latest, .way = W1},
++	{.br = 56, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl56nit_latest, .cTbl = a3_da_ctbl56nit_latest, .way = W1},
++	{.br = 60, .refBr = 105, .cGma = gma2p15, .rTbl = a3_da_rtbl60nit_latest, .cTbl = a3_da_ctbl60nit_latest, .way = W1},
++	{.br = 64, .refBr = 107, .cGma = gma2p15, .rTbl = a3_da_rtbl64nit_latest, .cTbl = a3_da_ctbl64nit_latest, .way = W1},
++	{.br = 68, .refBr = 114, .cGma = gma2p15, .rTbl = a3_da_rtbl68nit_latest, .cTbl = a3_da_ctbl68nit_latest, .way = W1},
++	{.br = 72, .refBr = 119, .cGma = gma2p15, .rTbl = a3_da_rtbl72nit_latest, .cTbl = a3_da_ctbl72nit_latest, .way = W1},
++	{.br = 77, .refBr = 127, .cGma = gma2p15, .rTbl = a3_da_rtbl77nit_latest, .cTbl = a3_da_ctbl77nit_latest, .way = W1},
++	{.br = 82, .refBr = 136, .cGma = gma2p15, .rTbl = a3_da_rtbl82nit_latest, .cTbl = a3_da_ctbl82nit_latest, .way = W1},
++	{.br = 87, .refBr = 142, .cGma = gma2p15, .rTbl = a3_da_rtbl87nit_latest, .cTbl = a3_da_ctbl87nit_latest, .way = W1},
++	{.br = 93, .refBr = 150, .cGma = gma2p15, .rTbl = a3_da_rtbl93nit_latest, .cTbl = a3_da_ctbl93nit_latest, .way = W1},
++	{.br = 98, .refBr = 158, .cGma = gma2p15, .rTbl = a3_da_rtbl98nit_latest, .cTbl = a3_da_ctbl98nit_latest, .way = W1},
++	{.br = 105, .refBr = 169, .cGma = gma2p15, .rTbl = a3_da_rtbl105nit_latest, .cTbl = a3_da_ctbl105nit_latest, .way = W1},
++	{.br = 111, .refBr = 176, .cGma = gma2p15, .rTbl = a3_da_rtbl111nit_latest, .cTbl = a3_da_ctbl111nit_latest, .way = W1},
++	{.br = 119, .refBr = 187, .cGma = gma2p15, .rTbl = a3_da_rtbl119nit_latest, .cTbl = a3_da_ctbl119nit_latest, .way = W1},
++	{.br = 126, .refBr = 198, .cGma = gma2p15, .rTbl = a3_da_rtbl126nit_latest, .cTbl = a3_da_ctbl126nit_latest, .way = W1},
++	{.br = 134, .refBr = 211, .cGma = gma2p15, .rTbl = a3_da_rtbl134nit_latest, .cTbl = a3_da_ctbl134nit_latest, .way = W1},
++	{.br = 143, .refBr = 222, .cGma = gma2p15, .rTbl = a3_da_rtbl143nit_latest, .cTbl = a3_da_ctbl143nit_latest, .way = W1},
++	{.br = 152, .refBr = 236, .cGma = gma2p15, .rTbl = a3_da_rtbl152nit_latest, .cTbl = a3_da_ctbl152nit_latest, .way = W1},
++	{.br = 162, .refBr = 252, .cGma = gma2p15, .rTbl = a3_da_rtbl162nit_latest, .cTbl = a3_da_ctbl162nit_latest, .way = W1},
++	{.br = 172, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl172nit_latest, .cTbl = a3_da_ctbl172nit_latest, .way = W1},
++	{.br = 183, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl183nit_latest, .cTbl = a3_da_ctbl183nit_latest, .way = W1},
++	{.br = 195, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl195nit_latest, .cTbl = a3_da_ctbl195nit_latest, .way = W1},
++	{.br = 207, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl207nit_latest, .cTbl = a3_da_ctbl207nit_latest, .way = W1},
++	{.br = 220, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl220nit_latest, .cTbl = a3_da_ctbl220nit_latest, .way = W1},
++	{.br = 234, .refBr = 269, .cGma = gma2p15, .rTbl = a3_da_rtbl234nit_latest, .cTbl = a3_da_ctbl234nit_latest, .way = W1},
++	{.br = 249, .refBr = 286, .cGma = gma2p15, .rTbl = a3_da_rtbl249nit_latest, .cTbl = a3_da_ctbl249nit_latest, .way = W1},
++	{.br = 265, .refBr = 304, .cGma = gma2p15, .rTbl = a3_da_rtbl265nit_latest, .cTbl = a3_da_ctbl265nit_latest, .way = W1},
++	{.br = 282, .refBr = 321, .cGma = gma2p15, .rTbl = a3_da_rtbl282nit_latest, .cTbl = a3_da_ctbl282nit_latest, .way = W1},
++	{.br = 300, .refBr = 339, .cGma = gma2p15, .rTbl = a3_da_rtbl300nit_latest, .cTbl = a3_da_ctbl300nit_latest, .way = W1},
++	{.br = 316, .refBr = 359, .cGma = gma2p15, .rTbl = a3_da_rtbl316nit_latest, .cTbl = a3_da_ctbl316nit_latest, .way = W1},
++	{.br = 333, .refBr = 378, .cGma = gma2p15, .rTbl = a3_da_rtbl333nit_latest, .cTbl = a3_da_ctbl333nit_latest, .way = W1},
++	{.br = 350, .refBr = 396, .cGma = gma2p15, .rTbl = a3_da_rtbl350nit_latest, .cTbl = a3_da_ctbl350nit_latest, .way = W1},
++	{.br = 357, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl357nit_latest, .cTbl = a3_da_ctbl357nit_latest, .way = W1},
++	{.br = 365, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl365nit_latest, .cTbl = a3_da_ctbl365nit_latest, .way = W1},
++	{.br = 372, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl372nit_latest, .cTbl = a3_da_ctbl372nit_latest, .way = W1},
++	{.br = 380, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl380nit_latest, .cTbl = a3_da_ctbl380nit_latest, .way = W1},
++	{.br = 387, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl387nit_latest, .cTbl = a3_da_ctbl387nit_latest, .way = W1},
++	{.br = 395, .refBr = 407, .cGma = gma2p15, .rTbl = a3_da_rtbl395nit_latest, .cTbl = a3_da_ctbl395nit_latest, .way = W1},
++	{.br = 403, .refBr = 413, .cGma = gma2p15, .rTbl = a3_da_rtbl403nit_latest, .cTbl = a3_da_ctbl403nit_latest, .way = W1},
++	{.br = 412, .refBr = 420, .cGma = gma2p15, .rTbl = a3_da_rtbl412nit_latest, .cTbl = a3_da_ctbl412nit_latest, .way = W1},
++	{.br = 420, .refBr = 427, .cGma = gma2p15, .rTbl = a3_da_rtbl420nit_latest, .cTbl = a3_da_ctbl420nit_latest, .way = W1},
++	{.br = 443, .refBr = 452, .cGma = gma2p15, .rTbl = a3_da_rtbl443nit_latest, .cTbl = a3_da_ctbl443nit_latest, .way = W1},
++	{.br = 465, .refBr = 473, .cGma = gma2p15, .rTbl = a3_da_rtbl465nit_latest, .cTbl = a3_da_ctbl465nit_latest, .way = W1},
++	{.br = 488, .refBr = 495, .cGma = gma2p15, .rTbl = a3_da_rtbl488nit_latest, .cTbl = a3_da_ctbl488nit_latest, .way = W1},
++	{.br = 510, .refBr = 515, .cGma = gma2p15, .rTbl = a3_da_rtbl510nit_latest, .cTbl = a3_da_ctbl510nit_latest, .way = W1},
++	{.br = 533, .refBr = 536, .cGma = gma2p15, .rTbl = a3_da_rtbl533nit_latest, .cTbl = a3_da_ctbl533nit_latest, .way = W1},
++	{.br = 555, .refBr = 558, .cGma = gma2p15, .rTbl = a3_da_rtbl555nit_latest, .cTbl = a3_da_ctbl555nit_latest, .way = W1},
++	{.br = 578, .refBr = 578, .cGma = gma2p15, .rTbl = a3_da_rtbl578nit_latest, .cTbl = a3_da_ctbl578nit_latest, .way = W1},
++	{.br = 600, .refBr = 600, .cGma = gma2p20, .rTbl = a3_da_rtbl600nit_latest, .cTbl = a3_da_ctbl600nit_latest, .way = W1},
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:840 */
++static const signed char a3_da_rtbl10nit_0x83[10] = {0, 18, 17, 15, 12, 9, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:841 */
++static const signed char a3_da_rtbl11nit_0x83[10] = {0, 18, 17, 15, 12, 9, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:842 */
++static const signed char a3_da_rtbl12nit_0x83[10] = {0, 17, 16, 14, 12, 9, 6, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:843 */
++static const signed char a3_da_rtbl13nit_0x83[10] = {0, 16, 15, 13, 11, 8, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:844 */
++static const signed char a3_da_rtbl14nit_0x83[10] = {0, 15, 14, 12, 11, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:845 */
++static const signed char a3_da_rtbl15nit_0x83[10] = {0, 14, 13, 12, 10, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:846 */
++static const signed char a3_da_rtbl16nit_0x83[10] = {0, 14, 13, 12, 10, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:847 */
++static const signed char a3_da_rtbl17nit_0x83[10] = {0, 14, 13, 12, 9, 7, 5, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:848 */
++static const signed char a3_da_rtbl19nit_0x83[10] = {0, 13, 12, 11, 8, 6, 4, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:849 */
++static const signed char a3_da_rtbl20nit_0x83[10] = {0, 12, 11, 10, 7, 6, 3, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:850 */
++static const signed char a3_da_rtbl21nit_0x83[10] = {0, 12, 11, 10, 7, 5, 3, 3, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:851 */
++static const signed char a3_da_rtbl22nit_0x83[10] = {0, 12, 11, 10, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:852 */
++static const signed char a3_da_rtbl24nit_0x83[10] = {0, 11, 10, 9, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:853 */
++static const signed char a3_da_rtbl25nit_0x83[10] = {0, 11, 10, 9, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:854 */
++static const signed char a3_da_rtbl27nit_0x83[10] = {0, 10, 9, 8, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:855 */
++static const signed char a3_da_rtbl29nit_0x83[10] = {0, 9, 8, 7, 5, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:856 */
++static const signed char a3_da_rtbl30nit_0x83[10] = {0, 9, 8, 7, 5, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:857 */
++static const signed char a3_da_rtbl32nit_0x83[10] = {0, 9, 8, 7, 5, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:858 */
++static const signed char a3_da_rtbl34nit_0x83[10] = {0, 8, 7, 6, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:859 */
++static const signed char a3_da_rtbl37nit_0x83[10] = {0, 7, 6, 6, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:860 */
++static const signed char a3_da_rtbl39nit_0x83[10] = {0, 6, 5, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:861 */
++static const signed char a3_da_rtbl41nit_0x83[10] = {0, 6, 5, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:862 */
++static const signed char a3_da_rtbl44nit_0x83[10] = {0, 6, 5, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:863 */
++static const signed char a3_da_rtbl47nit_0x83[10] = {0, 6, 5, 5, 4, 3, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:864 */
++static const signed char a3_da_rtbl50nit_0x83[10] = {0, 5, 4, 4, 3, 2, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:865 */
++static const signed char a3_da_rtbl53nit_0x83[10] = {0, 5, 4, 4, 3, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:866 */
++static const signed char a3_da_rtbl56nit_0x83[10] = {0, 5, 4, 3, 2, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:867 */
++static const signed char a3_da_rtbl60nit_0x83[10] = {0, 5, 4, 4, 2, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:868 */
++static const signed char a3_da_rtbl64nit_0x83[10] = {0, 5, 4, 4, 2, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:869 */
++static const signed char a3_da_rtbl68nit_0x83[10] = {0, 5, 4, 3, 3, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:870 */
++static const signed char a3_da_rtbl72nit_0x83[10] = {0, 5, 4, 3, 2, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:871 */
++static const signed char a3_da_rtbl77nit_0x83[10] = {0, 5, 4, 4, 3, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:872 */
++static const signed char a3_da_rtbl82nit_0x83[10] = {0, 5, 4, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:873 */
++static const signed char a3_da_rtbl87nit_0x83[10] = {0, 5, 4, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:874 */
++static const signed char a3_da_rtbl93nit_0x83[10] = {0, 5, 4, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:875 */
++static const signed char a3_da_rtbl98nit_0x83[10] = {0, 5, 4, 4, 2, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:876 */
++static const signed char a3_da_rtbl105nit_0x83[10] = {0, 5, 4, 3, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:877 */
++static const signed char a3_da_rtbl111nit_0x83[10] = {0, 5, 4, 3, 2, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:878 */
++static const signed char a3_da_rtbl119nit_0x83[10] = {0, 5, 4, 3, 1, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:879 */
++static const signed char a3_da_rtbl126nit_0x83[10] = {0, 6, 4, 2, 1, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:880 */
++static const signed char a3_da_rtbl134nit_0x83[10] = {0, 6, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:881 */
++static const signed char a3_da_rtbl143nit_0x83[10] = {0, 6, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:882 */
++static const signed char a3_da_rtbl152nit_0x83[10] = {0, 5, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:883 */
++static const signed char a3_da_rtbl162nit_0x83[10] = {0, 4, 3, 1, 1, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:884 */
++static const signed char a3_da_rtbl172nit_0x83[10] = {0, 4, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:885 */
++static const signed char a3_da_rtbl183nit_0x83[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:886 */
++static const signed char a3_da_rtbl195nit_0x83[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:887 */
++static const signed char a3_da_rtbl207nit_0x83[10] = {0, 2, 2, 0, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:888 */
++static const signed char a3_da_rtbl220nit_0x83[10] = {0, 2, 2, 0, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:889 */
++static const signed char a3_da_rtbl234nit_0x83[10] = {0, 2, 1, 1, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:890 */
++static const signed char a3_da_rtbl249nit_0x83[10] = {0, 2, 1, 1, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:891 */
++static const signed char a3_da_rtbl265nit_0x83[10] = {0, 2, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:892 */
++static const signed char a3_da_rtbl282nit_0x83[10] = {0, 2, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:893 */
++static const signed char a3_da_rtbl300nit_0x83[10] = {0, 2, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:894 */
++static const signed char a3_da_rtbl316nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:895 */
++static const signed char a3_da_rtbl333nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:896 */
++static const signed char a3_da_rtbl350nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:897 */
++static const signed char a3_da_rtbl357nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:898 */
++static const signed char a3_da_rtbl365nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:899 */
++static const signed char a3_da_rtbl372nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:900 */
++static const signed char a3_da_rtbl380nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:901 */
++static const signed char a3_da_rtbl387nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:902 */
++static const signed char a3_da_rtbl395nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:903 */
++static const signed char a3_da_rtbl403nit_0x83[10] = {0, 1, 1, 1, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:904 */
++static const signed char a3_da_rtbl412nit_0x83[10] = {0, 1, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:905 */
++static const signed char a3_da_rtbl420nit_0x83[10] = {0, 1, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:906 */
++static const signed char a3_da_rtbl443nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:907 */
++static const signed char a3_da_rtbl465nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:908 */
++static const signed char a3_da_rtbl488nit_0x83[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:909 */
++static const signed char a3_da_rtbl510nit_0x83[10] = {0, 0, 0, 1, 0, 0, 0, 1, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:910 */
++static const signed char a3_da_rtbl533nit_0x83[10] = {0, 0, 0, 0, 0, 0, 0, 0, -1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:911 */
++static const signed char a3_da_rtbl555nit_0x83[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:912 */
++static const signed char a3_da_rtbl578nit_0x83[10] = {0, 0, 0, 0, 0, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:913 */
++static const signed char a3_da_rtbl600nit_0x83[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:915 */
++static const signed char a3_da_ctbl10nit_0x83[30] = {0, 0, 0, -4, 4, 0, -35, 1, -14, -24, -1, -17, -17, 2, -13, -10, 3, -9, -3, 0, -3, 1, 3, 0, -1, 0, -1, -4, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:916 */
++static const signed char a3_da_ctbl11nit_0x83[30] = {0, 0, 0, -4, 4, 0, -35, 1, -14, -22, -2, -18, -15, 1, -12, -14, 1, -12, -5, 1, -4, 0, 3, 0, -1, 0, -1, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:917 */
++static const signed char a3_da_ctbl12nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 4, -14, -16, 4, -13, -15, 1, -11, -14, -2, -13, -5, 1, -4, 0, 2, 0, -1, 0, -1, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:918 */
++static const signed char a3_da_ctbl13nit_0x83[30] = {0, 0, 0, -4, 4, 0, -28, 3, -14, -16, 3, -13, -15, 1, -11, -13, -1, -12, -4, 3, -4, 0, 2, 0, 0, 0, 0, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:919 */
++static const signed char a3_da_ctbl14nit_0x83[30] = {0, 0, 0, -4, 4, 0, -25, 5, -11, -18, 2, -15, -15, 0, -11, -10, 2, -9, -4, 2, -4, 0, 2, 0, 0, 0, 0, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:920 */
++static const signed char a3_da_ctbl15nit_0x83[30] = {0, 0, 0, -4, 4, 0, -25, 6, -12, -18, 3, -15, -11, 1, -7, -10, 1, -9, -4, 2, -4, 0, 2, 0, 0, 0, 0, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:921 */
++static const signed char a3_da_ctbl16nit_0x83[30] = {0, 0, 0, -4, 4, 0, -23, 0, -12, -17, 4, -14, -13, 3, -9, -11, -1, -10, -4, 1, -4, 0, 2, 0, 0, 0, 0, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:922 */
++static const signed char a3_da_ctbl17nit_0x83[30] = {0, 0, 0, -4, 4, 0, -29, 6, -14, -22, -3, -18, -14, 1, -12, -7, 3, -6, -3, 1, -4, 0, 2, 0, 0, 0, 0, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:923 */
++static const signed char a3_da_ctbl19nit_0x83[30] = {0, 0, 0, -4, 4, 0, -29, 3, -15, -22, -3, -18, -14, -1, -12, -6, 3, -5, -2, 2, -2, 1, 2, 0, -1, 0, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:924 */
++static const signed char a3_da_ctbl20nit_0x83[30] = {0, 0, 0, -4, 4, 0, -29, 3, -15, -21, -1, -17, -10, 4, -7, -9, -1, -8, 0, 4, 0, 1, 2, 0, -1, 0, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:925 */
++static const signed char a3_da_ctbl21nit_0x83[30] = {0, 0, 0, -4, 4, 0, -30, -1, -16, -23, -1, -18, -12, 1, -12, -4, 4, -3, -1, 3, -1, 1, 3, 1, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:926 */
++static const signed char a3_da_ctbl22nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 3, -18, -23, -3, -17, -13, -1, -13, -5, 4, -4, -2, 2, -2, 2, 4, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:927 */
++static const signed char a3_da_ctbl24nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 0, -18, -18, 4, -14, -13, -2, -13, -6, 2, -5, -2, 2, -2, 2, 3, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:928 */
++static const signed char a3_da_ctbl25nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 1, -18, -19, 2, -16, -14, -3, -13, -6, 1, -5, -2, 2, -2, 2, 3, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:929 */
++static const signed char a3_da_ctbl27nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, -1, -20, -19, 1, -15, -11, -2, -10, -5, 1, -5, 0, 3, 1, 2, 3, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:930 */
++static const signed char a3_da_ctbl29nit_0x83[30] = {0, 0, 0, -4, 4, 0, -29, -1, -18, -18, 2, -14, -7, 4, -6, -6, 0, -5, 1, 3, 1, 2, 3, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:931 */
++static const signed char a3_da_ctbl30nit_0x83[30] = {0, 0, 0, -4, 4, 0, -31, -1, -19, -19, 1, -14, -7, 3, -6, -6, 0, -5, 1, 3, 1, 2, 3, 2, -1, -1, -1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:932 */
++static const signed char a3_da_ctbl32nit_0x83[30] = {0, 0, 0, -4, 4, 0, -33, -1, -18, -20, -1, -16, -10, -2, -9, -2, 3, -3, 1, 3, 2, 2, 3, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:933 */
++static const signed char a3_da_ctbl34nit_0x83[30] = {0, 0, 0, -4, 4, 0, -33, -2, -18, -20, -1, -17, -4, 4, -4, -3, 2, -3, 2, 3, 2, 2, 3, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:934 */
++static const signed char a3_da_ctbl37nit_0x83[30] = {0, 0, 0, -4, 4, 0, -28, 5, -15, -20, -2, -17, -5, 2, -5, -2, 2, -2, 1, 3, 1, 2, 2, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:935 */
++static const signed char a3_da_ctbl39nit_0x83[30] = {0, 0, 0, -4, 4, 0, -31, 5, -14, -14, 4, -10, -5, 1, -5, -3, 2, -3, 1, 2, 1, 2, 2, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:936 */
++static const signed char a3_da_ctbl41nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 4, -15, -13, 3, -10, -6, 1, -5, -3, 1, -3, 1, 2, 1, 2, 2, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:937 */
++static const signed char a3_da_ctbl44nit_0x83[30] = {0, 0, 0, -4, 4, 0, -32, 3, -15, -17, 1, -13, -6, 0, -5, -3, 0, -3, 1, 2, 1, 2, 2, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:938 */
++static const signed char a3_da_ctbl47nit_0x83[30] = {0, 0, 0, -4, 4, 0, -35, 2, -16, -17, 0, -13, -6, -2, -6, -3, 0, -3, 1, 2, 1, 2, 2, 2, -1, -1, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:939 */
++static const signed char a3_da_ctbl50nit_0x83[30] = {0, 0, 0, -4, 2, 0, -35, 1, -17, -16, 0, -13, -3, 0, -3, 1, 4, 1, 1, 2, 1, 1, 1, 0, -1, -1, -1, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:940 */
++static const signed char a3_da_ctbl53nit_0x83[30] = {0, 0, 0, -1, 2, 0, -24, 3, -17, -16, 0, -14, -3, 1, -2, -4, 0, -3, 3, 4, 3, 0, 0, -1, -1, -1, -1, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:941 */
++static const signed char a3_da_ctbl56nit_0x83[30] = {0, 0, 0, 1, 3, 1, -20, 2, -15, -13, 2, -13, -1, 4, -1, 1, 4, 1, 1, 2, 1, 0, 0, 0, -2, -2, -2, -2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:942 */
++static const signed char a3_da_ctbl60nit_0x83[30] = {0, 0, 0, -4, 1, -2, -24, -2, -19, -13, -1, -12, -1, 3, -1, -1, 2, -1, 0, 2, 0, -1, -1, -1, -2, -2, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:943 */
++static const signed char a3_da_ctbl64nit_0x83[30] = {0, 0, 0, -2, 2, -1, -24, -2, -19, -14, -3, -12, -1, 3, -1, -2, 1, -2, -1, 1, 0, 0, 0, 0, -2, -2, -2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:944 */
++static const signed char a3_da_ctbl68nit_0x83[30] = {0, 0, 0, 1, 3, 1, -18, 4, -15, -9, 3, -9, -2, 0, -4, -2, 2, 0, -3, -2, -2, 0, 0, 0, -2, -2, -2, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:945 */
++static const signed char a3_da_ctbl72nit_0x83[30] = {0, 0, 0, 0, 2, -1, -18, 4, -16, -6, 3, -6, -2, 3, -2, -6, -2, -4, -1, 0, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:946 */
++static const signed char a3_da_ctbl77nit_0x83[30] = {0, 0, 0, -4, 1, -2, -17, 4, -14, -10, 0, -10, -2, 1, -3, -6, -2, -4, -3, -2, -1, -1, 0, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:947 */
++static const signed char a3_da_ctbl82nit_0x83[30] = {0, 0, 0, -1, 2, -1, -24, 0, -21, -3, 4, -3, -5, -1, -4, -6, -1, -4, -4, -3, -2, 2, 1, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:948 */
++static const signed char a3_da_ctbl87nit_0x83[30] = {0, 0, 0, -2, 3, -2, -26, -2, -22, -12, -2, -12, -5, -2, -4, -5, -1, -3, -3, -3, -2, 2, 1, 0, -1, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:949 */
++static const signed char a3_da_ctbl93nit_0x83[30] = {0, 0, 0, -4, 1, -3, -18, 6, -16, -5, 0, -8, -7, -3, -5, -7, -2, -4, -2, -1, -1, 0, 0, 1, -1, -1, -1, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:950 */
++static const signed char a3_da_ctbl98nit_0x83[30] = {0, 0, 0, -6, 0, -5, -18, 4, -15, -6, 0, -6, -4, -1, -3, -5, -1, -2, -1, -1, -1, -1, -1, -1, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:951 */
++static const signed char a3_da_ctbl105nit_0x83[30] = {0, 0, 0, -8, -1, -6, -17, 4, -16, 0, 4, -4, -7, -4, -6, -5, -1, -2, -1, 0, 0, -1, -1, -1, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:952 */
++static const signed char a3_da_ctbl111nit_0x83[30] = {0, 0, 0, -8, -1, -7, -20, 2, -17, -3, 1, -5, -6, -2, -5, -5, 0, -2, 1, 1, 1, 1, 0, 0, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:953 */
++static const signed char a3_da_ctbl119nit_0x83[30] = {0, 0, 0, -5, 0, -4, -18, 4, -16, -2, 0, -5, -2, 1, -2, -5, 0, -2, 1, 1, 1, -1, -1, 0, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:954 */
++static const signed char a3_da_ctbl126nit_0x83[30] = {0, 0, 0, -8, -1, -6, -22, -2, -20, -3, 2, -3, 0, 3, 1, -1, 0, -2, -1, 0, -1, -1, -1, -1, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:955 */
++static const signed char a3_da_ctbl134nit_0x83[30] = {0, 0, 0, -10, -2, -8, -22, -1, -19, 0, 2, -3, -6, -2, -4, -1, 3, 1, 0, 0, 0, 1, 0, 0, 1, 2, 1, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:956 */
++static const signed char a3_da_ctbl143nit_0x83[30] = {0, 0, 0, -9, -1, -6, -22, 0, -17, -7, -2, -9, -4, 0, -2, 0, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:957 */
++static const signed char a3_da_ctbl152nit_0x83[30] = {0, 0, 0, -9, -2, -7, -22, 0, -19, -5, 0, -3, -4, -2, -3, -1, 1, -1, 2, 2, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:958 */
++static const signed char a3_da_ctbl162nit_0x83[30] = {0, 0, 0, -9, -2, -8, -12, 4, -11, -1, 2, -1, -6, -3, -4, -1, 2, 0, 1, 2, 2, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:959 */
++static const signed char a3_da_ctbl172nit_0x83[30] = {0, 0, 0, -2, 1, -2, -26, -4, -23, -2, -2, -2, 2, 3, 1, -1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:960 */
++static const signed char a3_da_ctbl183nit_0x83[30] = {0, 0, 0, -3, 2, -3, -16, 1, -14, -1, -2, -2, 1, 3, 0, -1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:961 */
++static const signed char a3_da_ctbl195nit_0x83[30] = {0, 0, 0, -3, 2, -3, -18, -1, -15, -3, -3, -3, -1, 0, -1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:962 */
++static const signed char a3_da_ctbl207nit_0x83[30] = {0, 0, 0, -2, 2, -3, -13, -1, -12, 3, 2, 1, -1, 0, -1, -1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:963 */
++static const signed char a3_da_ctbl220nit_0x83[30] = {0, 0, 0, -2, 2, -3, -14, -3, -13, 3, 2, 2, -1, 0, -1, -1, 1, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:964 */
++static const signed char a3_da_ctbl234nit_0x83[30] = {0, 0, 0, -4, 2, -4, -12, 1, -10, 1, 0, 1, -3, -2, -2, -2, -1, -2, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:965 */
++static const signed char a3_da_ctbl249nit_0x83[30] = {0, 0, 0, -5, 1, -5, -12, -1, -11, 4, 4, 4, -3, -3, -3, -2, -1, -2, 0, 1, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:966 */
++static const signed char a3_da_ctbl265nit_0x83[30] = {0, 0, 0, -14, -5, -12, -4, 4, -5, 4, 4, 3, 0, 0, 0, -2, -1, -1, 0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:967 */
++static const signed char a3_da_ctbl282nit_0x83[30] = {0, 0, 0, -14, -6, -12, -5, 1, -6, 6, 4, 5, 1, 2, 1, -2, -1, -2, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:968 */
++static const signed char a3_da_ctbl300nit_0x83[30] = {0, 0, 0, -6, -1, -6, -8, 0, -8, 3, 2, 1, -1, 1, 0, -1, -1, -1, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:969 */
++static const signed char a3_da_ctbl316nit_0x83[30] = {0, 0, 0, -12, -2, -10, -9, -1, -8, 4, 4, 3, -1, 0, 0, -1, 0, -1, 0, 0, 1, 2, 2, 1, 0, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:970 */
++static const signed char a3_da_ctbl333nit_0x83[30] = {0, 0, 0, -13, -3, -11, -4, 3, -4, -1, -1, 0, 1, 2, 1, -2, 0, 0, 1, 0, 0, 1, 2, 2, 0, 0, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:971 */
++static const signed char a3_da_ctbl350nit_0x83[30] = {0, 0, 0, -14, -4, -11, -4, 2, -4, 2, 2, 2, -1, 0, 1, 0, 0, -1, 0, 0, 0, 3, 2, 2, 0, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:972 */
++static const signed char a3_da_ctbl357nit_0x83[30] = {0, 0, 0, -14, -4, -11, -3, 3, -3, 2, 2, 2, -1, 0, 1, 0, 0, -1, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:973 */
++static const signed char a3_da_ctbl365nit_0x83[30] = {0, 0, 0, -14, -4, -11, -4, 2, -4, 2, 2, 2, -1, 0, 1, 0, 0, -1, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:974 */
++static const signed char a3_da_ctbl372nit_0x83[30] = {0, 0, 0, -14, -4, -11, -5, 1, -4, 3, 2, 2, -1, 0, 0, -1, -1, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:975 */
++static const signed char a3_da_ctbl380nit_0x83[30] = {0, 0, 0, -15, -5, -13, -4, 1, -4, 3, 2, 3, -1, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:976 */
++static const signed char a3_da_ctbl387nit_0x83[30] = {0, 0, 0, -15, -5, -12, -3, 1, -4, 1, 1, 2, 0, 0, 1, 0, 0, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:977 */
++static const signed char a3_da_ctbl395nit_0x83[30] = {0, 0, 0, -15, -5, -12, -3, 1, -4, 1, 1, 2, 0, 0, 1, 0, 0, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:978 */
++static const signed char a3_da_ctbl403nit_0x83[30] = {0, 0, 0, -4, 1, -4, -8, -1, -7, -3, -3, -2, 1, 3, 2, 1, 0, 0, 0, 0, 0, 1, 1, 1, -1, 0, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:979 */
++static const signed char a3_da_ctbl412nit_0x83[30] = {0, 0, 0, -5, 0, -5, -7, -1, -6, 0, 0, 0, -2, -1, -1, -1, -1, 0, 2, 0, 1, 2, 2, 1, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:980 */
++static const signed char a3_da_ctbl420nit_0x83[30] = {0, 0, 0, -5, 0, -5, -7, -1, -6, 0, -1, -1, 0, 2, 2, -1, -1, -2, 1, 0, 0, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:981 */
++static const signed char a3_da_ctbl443nit_0x83[30] = {0, 0, 0, -6, -1, -6, -7, -3, -6, 3, 2, 3, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 2, 1, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:982 */
++static const signed char a3_da_ctbl465nit_0x83[30] = {0, 0, 0, -5, -1, -5, -3, 1, -3, -3, -3, -2, 2, 1, 1, -1, -1, -1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:983 */
++static const signed char a3_da_ctbl488nit_0x83[30] = {0, 0, 0, -8, -3, -7, -3, -1, -3, 2, 2, 1, -1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:984 */
++static const signed char a3_da_ctbl510nit_0x83[30] = {0, 0, 0, -7, -3, -6, 2, 4, 1, 0, -1, 1, -2, -1, -1, -1, -1, -1, 2, 1, 2, 0, 0, 0, -1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:985 */
++static const signed char a3_da_ctbl533nit_0x83[30] = {0, 0, 0, -6, -3, -5, 2, 2, 1, 0, -1, 1, 0, 2, 1, -1, -2, -1, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:986 */
++static const signed char a3_da_ctbl555nit_0x83[30] = {0, 0, 0, 0, 1, -1, -3, -2, -2, 3, 2, 2, 0, 2, 1, 0, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:987 */
++static const signed char a3_da_ctbl578nit_0x83[30] = {0, 0, 0, 0, 1, 0, 0, 1, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:988 */
++static const signed char a3_da_ctbl600nit_0x83[30] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:990 */
++static const struct SmtDimInfo s6e36w4x01_dimming_info_0x83[MAX_BR_INFO] = {
++	{.br = 10, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl10nit_0x83, .cTbl = a3_da_ctbl10nit_0x83, .way = W1},
++	{.br = 11, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl11nit_0x83, .cTbl = a3_da_ctbl11nit_0x83, .way = W1},
++	{.br = 12, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl12nit_0x83, .cTbl = a3_da_ctbl12nit_0x83, .way = W1},
++	{.br = 13, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl13nit_0x83, .cTbl = a3_da_ctbl13nit_0x83, .way = W1},
++	{.br = 14, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl14nit_0x83, .cTbl = a3_da_ctbl14nit_0x83, .way = W1},
++	{.br = 15, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl15nit_0x83, .cTbl = a3_da_ctbl15nit_0x83, .way = W1},
++	{.br = 16, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl16nit_0x83, .cTbl = a3_da_ctbl16nit_0x83, .way = W1},
++	{.br = 17, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl17nit_0x83, .cTbl = a3_da_ctbl17nit_0x83, .way = W1},
++	{.br = 19, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl19nit_0x83, .cTbl = a3_da_ctbl19nit_0x83, .way = W1},
++	{.br = 20, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl20nit_0x83, .cTbl = a3_da_ctbl20nit_0x83, .way = W1},
++	{.br = 21, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl21nit_0x83, .cTbl = a3_da_ctbl21nit_0x83, .way = W1},
++	{.br = 22, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl22nit_0x83, .cTbl = a3_da_ctbl22nit_0x83, .way = W1},
++	{.br = 24, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl24nit_0x83, .cTbl = a3_da_ctbl24nit_0x83, .way = W1},
++	{.br = 25, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl25nit_0x83, .cTbl = a3_da_ctbl25nit_0x83, .way = W1},
++	{.br = 27, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl27nit_0x83, .cTbl = a3_da_ctbl27nit_0x83, .way = W1},
++	{.br = 29, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl29nit_0x83, .cTbl = a3_da_ctbl29nit_0x83, .way = W1},
++	{.br = 30, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl30nit_0x83, .cTbl = a3_da_ctbl30nit_0x83, .way = W1},
++	{.br = 32, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl32nit_0x83, .cTbl = a3_da_ctbl32nit_0x83, .way = W1},
++	{.br = 34, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl34nit_0x83, .cTbl = a3_da_ctbl34nit_0x83, .way = W1},
++	{.br = 37, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl37nit_0x83, .cTbl = a3_da_ctbl37nit_0x83, .way = W1},
++	{.br = 39, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl39nit_0x83, .cTbl = a3_da_ctbl39nit_0x83, .way = W1},
++	{.br = 41, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl41nit_0x83, .cTbl = a3_da_ctbl41nit_0x83, .way = W1},
++	{.br = 44, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl44nit_0x83, .cTbl = a3_da_ctbl44nit_0x83, .way = W1},
++	{.br = 47, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl47nit_0x83, .cTbl = a3_da_ctbl47nit_0x83, .way = W1},
++	{.br = 50, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl50nit_0x83, .cTbl = a3_da_ctbl50nit_0x83, .way = W1},
++	{.br = 53, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl53nit_0x83, .cTbl = a3_da_ctbl53nit_0x83, .way = W1},
++	{.br = 56, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl56nit_0x83, .cTbl = a3_da_ctbl56nit_0x83, .way = W1},
++	{.br = 60, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl60nit_0x83, .cTbl = a3_da_ctbl60nit_0x83, .way = W1},
++	{.br = 64, .refBr = 107, .cGma = gma2p15, .rTbl = a3_da_rtbl64nit_0x83, .cTbl = a3_da_ctbl64nit_0x83, .way = W1},
++	{.br = 68, .refBr = 114, .cGma = gma2p15, .rTbl = a3_da_rtbl68nit_0x83, .cTbl = a3_da_ctbl68nit_0x83, .way = W1},
++	{.br = 72, .refBr = 119, .cGma = gma2p15, .rTbl = a3_da_rtbl72nit_0x83, .cTbl = a3_da_ctbl72nit_0x83, .way = W1},
++	{.br = 77, .refBr = 127, .cGma = gma2p15, .rTbl = a3_da_rtbl77nit_0x83, .cTbl = a3_da_ctbl77nit_0x83, .way = W1},
++	{.br = 82, .refBr = 135, .cGma = gma2p15, .rTbl = a3_da_rtbl82nit_0x83, .cTbl = a3_da_ctbl82nit_0x83, .way = W1},
++	{.br = 87, .refBr = 143, .cGma = gma2p15, .rTbl = a3_da_rtbl87nit_0x83, .cTbl = a3_da_ctbl87nit_0x83, .way = W1},
++	{.br = 93, .refBr = 150, .cGma = gma2p15, .rTbl = a3_da_rtbl93nit_0x83, .cTbl = a3_da_ctbl93nit_0x83, .way = W1},
++	{.br = 98, .refBr = 158, .cGma = gma2p15, .rTbl = a3_da_rtbl98nit_0x83, .cTbl = a3_da_ctbl98nit_0x83, .way = W1},
++	{.br = 105, .refBr = 169, .cGma = gma2p15, .rTbl = a3_da_rtbl105nit_0x83, .cTbl = a3_da_ctbl105nit_0x83, .way = W1},
++	{.br = 111, .refBr = 177, .cGma = gma2p15, .rTbl = a3_da_rtbl111nit_0x83, .cTbl = a3_da_ctbl111nit_0x83, .way = W1},
++	{.br = 119, .refBr = 187, .cGma = gma2p15, .rTbl = a3_da_rtbl119nit_0x83, .cTbl = a3_da_ctbl119nit_0x83, .way = W1},
++	{.br = 126, .refBr = 199, .cGma = gma2p15, .rTbl = a3_da_rtbl126nit_0x83, .cTbl = a3_da_ctbl126nit_0x83, .way = W1},
++	{.br = 134, .refBr = 208, .cGma = gma2p15, .rTbl = a3_da_rtbl134nit_0x83, .cTbl = a3_da_ctbl134nit_0x83, .way = W1},
++	{.br = 143, .refBr = 222, .cGma = gma2p15, .rTbl = a3_da_rtbl143nit_0x83, .cTbl = a3_da_ctbl143nit_0x83, .way = W1},
++	{.br = 152, .refBr = 237, .cGma = gma2p15, .rTbl = a3_da_rtbl152nit_0x83, .cTbl = a3_da_ctbl152nit_0x83, .way = W1},
++	{.br = 162, .refBr = 253, .cGma = gma2p15, .rTbl = a3_da_rtbl162nit_0x83, .cTbl = a3_da_ctbl162nit_0x83, .way = W1},
++	{.br = 172, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl172nit_0x83, .cTbl = a3_da_ctbl172nit_0x83, .way = W1},
++	{.br = 183, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl183nit_0x83, .cTbl = a3_da_ctbl183nit_0x83, .way = W1},
++	{.br = 195, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl195nit_0x83, .cTbl = a3_da_ctbl195nit_0x83, .way = W1},
++	{.br = 207, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl207nit_0x83, .cTbl = a3_da_ctbl207nit_0x83, .way = W1},
++	{.br = 220, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl220nit_0x83, .cTbl = a3_da_ctbl220nit_0x83, .way = W1},
++	{.br = 234, .refBr = 269, .cGma = gma2p15, .rTbl = a3_da_rtbl234nit_0x83, .cTbl = a3_da_ctbl234nit_0x83, .way = W1},
++	{.br = 249, .refBr = 286, .cGma = gma2p15, .rTbl = a3_da_rtbl249nit_0x83, .cTbl = a3_da_ctbl249nit_0x83, .way = W1},
++	{.br = 265, .refBr = 301, .cGma = gma2p15, .rTbl = a3_da_rtbl265nit_0x83, .cTbl = a3_da_ctbl265nit_0x83, .way = W1},
++	{.br = 282, .refBr = 321, .cGma = gma2p15, .rTbl = a3_da_rtbl282nit_0x83, .cTbl = a3_da_ctbl282nit_0x83, .way = W1},
++	{.br = 300, .refBr = 339, .cGma = gma2p15, .rTbl = a3_da_rtbl300nit_0x83, .cTbl = a3_da_ctbl300nit_0x83, .way = W1},
++	{.br = 316, .refBr = 354, .cGma = gma2p15, .rTbl = a3_da_rtbl316nit_0x83, .cTbl = a3_da_ctbl316nit_0x83, .way = W1},
++	{.br = 333, .refBr = 370, .cGma = gma2p15, .rTbl = a3_da_rtbl333nit_0x83, .cTbl = a3_da_ctbl333nit_0x83, .way = W1},
++	{.br = 350, .refBr = 388, .cGma = gma2p15, .rTbl = a3_da_rtbl350nit_0x83, .cTbl = a3_da_ctbl350nit_0x83, .way = W1},
++	{.br = 357, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl357nit_0x83, .cTbl = a3_da_ctbl357nit_0x83, .way = W1},
++	{.br = 365, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl365nit_0x83, .cTbl = a3_da_ctbl365nit_0x83, .way = W1},
++	{.br = 372, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl372nit_0x83, .cTbl = a3_da_ctbl372nit_0x83, .way = W1},
++	{.br = 380, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl380nit_0x83, .cTbl = a3_da_ctbl380nit_0x83, .way = W1},
++	{.br = 387, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl387nit_0x83, .cTbl = a3_da_ctbl387nit_0x83, .way = W1},
++	{.br = 395, .refBr = 395, .cGma = gma2p15, .rTbl = a3_da_rtbl395nit_0x83, .cTbl = a3_da_ctbl395nit_0x83, .way = W1},
++	{.br = 403, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl403nit_0x83, .cTbl = a3_da_ctbl403nit_0x83, .way = W1},
++	{.br = 412, .refBr = 412, .cGma = gma2p15, .rTbl = a3_da_rtbl412nit_0x83, .cTbl = a3_da_ctbl412nit_0x83, .way = W1},
++	{.br = 420, .refBr = 420, .cGma = gma2p15, .rTbl = a3_da_rtbl420nit_0x83, .cTbl = a3_da_ctbl420nit_0x83, .way = W1},
++	{.br = 443, .refBr = 442, .cGma = gma2p15, .rTbl = a3_da_rtbl443nit_0x83, .cTbl = a3_da_ctbl443nit_0x83, .way = W1},
++	{.br = 465, .refBr = 463, .cGma = gma2p15, .rTbl = a3_da_rtbl465nit_0x83, .cTbl = a3_da_ctbl465nit_0x83, .way = W1},
++	{.br = 488, .refBr = 485, .cGma = gma2p15, .rTbl = a3_da_rtbl488nit_0x83, .cTbl = a3_da_ctbl488nit_0x83, .way = W1},
++	{.br = 510, .refBr = 507, .cGma = gma2p15, .rTbl = a3_da_rtbl510nit_0x83, .cTbl = a3_da_ctbl510nit_0x83, .way = W1},
++	{.br = 533, .refBr = 532, .cGma = gma2p15, .rTbl = a3_da_rtbl533nit_0x83, .cTbl = a3_da_ctbl533nit_0x83, .way = W1},
++	{.br = 555, .refBr = 552, .cGma = gma2p15, .rTbl = a3_da_rtbl555nit_0x83, .cTbl = a3_da_ctbl555nit_0x83, .way = W1},
++	{.br = 578, .refBr = 575, .cGma = gma2p15, .rTbl = a3_da_rtbl578nit_0x83, .cTbl = a3_da_ctbl578nit_0x83, .way = W1},
++	{.br = 600, .refBr = 600, .cGma = gma2p20, .rTbl = a3_da_rtbl600nit_0x83, .cTbl = a3_da_ctbl600nit_0x83, .way = W1},
++};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1067 */
++static const signed char a3_da_rtbl10nit_old[10] = {0, 23, 22, 19, 16, 12, 7, 4, 2, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1068 */
++static const signed char a3_da_rtbl11nit_old[10] = {0, 22, 21, 17, 14, 11, 6, 4, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1069 */
++static const signed char a3_da_rtbl12nit_old[10] = {0, 21, 20, 16, 13, 10, 5, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1070 */
++static const signed char a3_da_rtbl13nit_old[10] = {0, 20, 19, 15, 12, 9, 4, 2, -1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1071 */
++static const signed char a3_da_rtbl14nit_old[10] = {0, 19, 18, 14, 11, 8, 4, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1072 */
++static const signed char a3_da_rtbl15nit_old[10] = {0, 19, 18, 14, 11, 8, 4, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1073 */
++static const signed char a3_da_rtbl16nit_old[10] = {0, 19, 18, 14, 11, 8, 4, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1074 */
++static const signed char a3_da_rtbl17nit_old[10] = {0, 18, 17, 13, 10, 8, 4, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1075 */
++static const signed char a3_da_rtbl19nit_old[10] = {0, 17, 16, 12, 9, 7, 4, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1076 */
++static const signed char a3_da_rtbl20nit_old[10] = {0, 16, 15, 11, 8, 6, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1077 */
++static const signed char a3_da_rtbl21nit_old[10] = {0, 16, 15, 11, 8, 6, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1078 */
++static const signed char a3_da_rtbl22nit_old[10] = {0, 15, 14, 11, 8, 6, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1079 */
++static const signed char a3_da_rtbl24nit_old[10] = {0, 14, 13, 10, 7, 5, 3, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1080 */
++static const signed char a3_da_rtbl25nit_old[10] = {0, 14, 13, 10, 7, 5, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1081 */
++static const signed char a3_da_rtbl27nit_old[10] = {0, 13, 12, 9, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1082 */
++static const signed char a3_da_rtbl29nit_old[10] = {0, 12, 11, 8, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1083 */
++static const signed char a3_da_rtbl30nit_old[10] = {0, 12, 11, 8, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1084 */
++static const signed char a3_da_rtbl32nit_old[10] = {0, 12, 11, 8, 6, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1085 */
++static const signed char a3_da_rtbl34nit_old[10] = {0, 11, 10, 7, 5, 4, 2, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1086 */
++static const signed char a3_da_rtbl37nit_old[10] = {0, 10, 9, 6, 4, 3, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1087 */
++static const signed char a3_da_rtbl39nit_old[10] = {0, 10, 9, 6, 4, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1088 */
++static const signed char a3_da_rtbl41nit_old[10] = {0, 10, 9, 6, 4, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1089 */
++static const signed char a3_da_rtbl44nit_old[10] = {0, 10, 9, 6, 4, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1090 */
++static const signed char a3_da_rtbl47nit_old[10] = {0, 9, 8, 5, 3, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1091 */
++static const signed char a3_da_rtbl50nit_old[10] = {0, 8, 7, 4, 3, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1092 */
++static const signed char a3_da_rtbl53nit_old[10] = {0, 8, 7, 4, 3, 2, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1093 */
++static const signed char a3_da_rtbl56nit_old[10] = {0, 7, 6, 4, 3, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1094 */
++static const signed char a3_da_rtbl60nit_old[10] = {0, 7, 6, 4, 2, 1, 1, 2, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1095 */
++static const signed char a3_da_rtbl64nit_old[10] = {0, 7, 6, 4, 2, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1096 */
++static const signed char a3_da_rtbl68nit_old[10] = {0, 6, 5, 3, 3, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1097 */
++static const signed char a3_da_rtbl72nit_old[10] = {0, 6, 5, 3, 2, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1098 */
++static const signed char a3_da_rtbl77nit_old[10] = {0, 7, 6, 4, 3, 2, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1099 */
++static const signed char a3_da_rtbl82nit_old[10] = {0, 7, 6, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1100 */
++static const signed char a3_da_rtbl87nit_old[10] = {0, 7, 6, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1101 */
++static const signed char a3_da_rtbl93nit_old[10] = {0, 6, 5, 4, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1102 */
++static const signed char a3_da_rtbl98nit_old[10] = {0, 6, 5, 4, 2, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1103 */
++static const signed char a3_da_rtbl105nit_old[10] = {0, 6, 5, 3, 3, 2, 1, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1104 */
++static const signed char a3_da_rtbl111nit_old[10] = {0, 6, 5, 3, 2, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1105 */
++static const signed char a3_da_rtbl119nit_old[10] = {0, 5, 4, 3, 1, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1106 */
++static const signed char a3_da_rtbl126nit_old[10] = {0, 6, 4, 2, 1, 1, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1107 */
++static const signed char a3_da_rtbl134nit_old[10] = {0, 6, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1108 */
++static const signed char a3_da_rtbl143nit_old[10] = {0, 6, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1109 */
++static const signed char a3_da_rtbl152nit_old[10] = {0, 5, 4, 2, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1110 */
++static const signed char a3_da_rtbl162nit_old[10] = {0, 4, 3, 1, 1, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1111 */
++static const signed char a3_da_rtbl172nit_old[10] = {0, 4, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1112 */
++static const signed char a3_da_rtbl183nit_old[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1113 */
++static const signed char a3_da_rtbl195nit_old[10] = {0, 3, 3, 1, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1114 */
++static const signed char a3_da_rtbl207nit_old[10] = {0, 2, 2, 0, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1115 */
++static const signed char a3_da_rtbl220nit_old[10] = {0, 2, 2, 0, 0, -1, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1116 */
++static const signed char a3_da_rtbl234nit_old[10] = {0, 2, 1, 1, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1117 */
++static const signed char a3_da_rtbl249nit_old[10] = {0, 2, 1, 1, 1, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1118 */
++static const signed char a3_da_rtbl265nit_old[10] = {0, 2, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1119 */
++static const signed char a3_da_rtbl282nit_old[10] = {0, 2, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1120 */
++static const signed char a3_da_rtbl300nit_old[10] = {0, 2, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1121 */
++static const signed char a3_da_rtbl316nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1122 */
++static const signed char a3_da_rtbl333nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1123 */
++static const signed char a3_da_rtbl350nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1124 */
++static const signed char a3_da_rtbl357nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1125 */
++static const signed char a3_da_rtbl365nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1126 */
++static const signed char a3_da_rtbl372nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1127 */
++static const signed char a3_da_rtbl380nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1128 */
++static const signed char a3_da_rtbl387nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1129 */
++static const signed char a3_da_rtbl395nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1130 */
++static const signed char a3_da_rtbl403nit_old[10] = {0, 1, 1, 1, 0, 0, 0, 0, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1131 */
++static const signed char a3_da_rtbl412nit_old[10] = {0, 1, 1, 1, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1132 */
++static const signed char a3_da_rtbl420nit_old[10] = {0, 1, 1, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1133 */
++static const signed char a3_da_rtbl443nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1134 */
++static const signed char a3_da_rtbl465nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1135 */
++static const signed char a3_da_rtbl488nit_old[10] = {0, 1, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1136 */
++static const signed char a3_da_rtbl510nit_old[10] = {0, 0, 0, 1, 0, 0, 0, 1, 1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1137 */
++static const signed char a3_da_rtbl533nit_old[10] = {0, 0, 0, 0, 0, 0, 0, 0, -1, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1138 */
++static const signed char a3_da_rtbl555nit_old[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1139 */
++static const signed char a3_da_rtbl578nit_old[10] = {0, 0, 0, 0, 0, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1140 */
++static const signed char a3_da_rtbl600nit_old[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1142 */
++static const signed char a3_da_ctbl10nit_old[30] = {0, 0, 0, -1, 4, 0, -29, 3, -9, -9, 3, -10, -10, -1, -14, -17, 0, -15, -6, 3, -5, -2, 2, -1, -1, 0, -2, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1143 */
++static const signed char a3_da_ctbl11nit_old[30] = {0, 0, 0, -1, 4, 0, -18, -3, -12, -11, 2, -15, -5, 4, -5, -16, 0, -15, -5, 3, -5, -3, 2, -2, -1, 0, -1, -3, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1144 */
++static const signed char a3_da_ctbl12nit_old[30] = {0, 0, 0, -1, 4, 0, -17, -2, -12, -11, 1, -16, -6, 4, -6, -18, 0, -15, -4, 3, -4, -2, 3, -1, -1, 0, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1145 */
++static const signed char a3_da_ctbl13nit_old[30] = {0, 0, 0, -1, 4, 0, -17, -1, -13, -14, -1, -19, -6, 4, -6, -16, 0, -14, -3, 4, -3, -3, 2, -1, 0, 1, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1146 */
++static const signed char a3_da_ctbl14nit_old[30] = {0, 0, 0, -1, 4, 0, -17, -3, -14, -18, -1, -21, -5, 3, -6, -12, 2, -11, -3, 4, -3, -2, 2, -1, 0, 1, 1, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1147 */
++static const signed char a3_da_ctbl15nit_old[30] = {0, 0, 0, -1, 4, 0, -16, -3, -14, -15, -1, -17, -11, 0, -10, -12, 2, -10, -3, 4, -3, -2, 1, -2, -1, 0, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1148 */
++static const signed char a3_da_ctbl16nit_old[30] = {0, 0, 0, -1, 4, 0, -16, -3, -14, -17, -2, -19, -11, 0, -9, -14, 0, -13, -4, 2, -4, -2, 1, -1, -1, 0, 0, -2, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1149 */
++static const signed char a3_da_ctbl17nit_old[30] = {0, 0, 0, -1, 4, 0, -14, -1, -10, -17, -1, -18, -9, 4, -8, -13, 0, -12, -6, 1, -5, -2, 1, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1150 */
++static const signed char a3_da_ctbl19nit_old[30] = {0, 0, 0, -1, 4, 0, -16, 0, -11, -20, -3, -21, -8, 4, -7, -11, 3, -11, -5, 1, -4, -2, 0, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1151 */
++static const signed char a3_da_ctbl20nit_old[30] = {0, 0, 0, -1, 4, 0, -10, -2, -12, -17, -2, -18, -11, 3, -10, -8, 3, -8, -3, 3, -2, -2, 0, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1152 */
++static const signed char a3_da_ctbl21nit_old[30] = {0, 0, 0, -1, 4, 0, -19, -2, -14, -19, -2, -20, -8, 3, -7, -9, 2, -8, -3, 3, -3, -2, 0, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1153 */
++static const signed char a3_da_ctbl22nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 5, -8, -15, -2, -18, -11, 1, -10, -11, 0, -9, -3, 3, -3, -2, 0, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1154 */
++static const signed char a3_da_ctbl24nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 4, -9, -21, -2, -20, -8, 1, -9, -6, 4, -5, -3, 3, -2, -2, 0, -2, -1, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1155 */
++static const signed char a3_da_ctbl25nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 4, -10, -18, -2, -18, -12, 0, -12, -9, 2, -8, -2, 4, -1, -2, 0, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1156 */
++static const signed char a3_da_ctbl27nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 3, -10, -15, -1, -16, -13, 0, -12, -8, 1, -8, -2, 4, -1, -2, 0, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1157 */
++static const signed char a3_da_ctbl29nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 5, -9, -12, 4, -13, -11, -1, -12, -8, 1, -7, -2, 3, -1, -2, 0, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1158 */
++static const signed char a3_da_ctbl30nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 4, -10, -11, 4, -12, -11, -1, -11, -9, 0, -8, -2, 3, -1, -2, 0, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1159 */
++static const signed char a3_da_ctbl32nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 5, -10, -15, 2, -15, -13, -2, -13, -8, 0, -7, -2, 3, -1, -2, -1, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1160 */
++static const signed char a3_da_ctbl34nit_old[30] = {0, 0, 0, -1, 4, 0, -11, 3, -10, -15, 2, -15, -7, 4, -7, -9, -1, -7, -2, 2, -2, -2, -1, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1161 */
++static const signed char a3_da_ctbl37nit_old[30] = {0, 0, 0, -1, 4, 0, -17, 1, -15, -13, 3, -13, -5, 4, -6, -6, 0, -4, 0, 3, -1, -2, -1, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1162 */
++static const signed char a3_da_ctbl39nit_old[30] = {0, 0, 0, -1, 4, 0, -17, 1, -15, -17, 0, -16, -8, 1, -8, -3, 4, -2, 0, 3, -1, -2, -1, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1163 */
++static const signed char a3_da_ctbl41nit_old[30] = {0, 0, 0, -1, 4, 0, -20, -1, -17, -17, 0, -15, -9, 0, -9, -4, 2, -3, 0, 3, -1, -2, -1, -2, -1, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1164 */
++static const signed char a3_da_ctbl44nit_old[30] = {0, 0, 0, -1, 4, 0, -24, -3, -20, -16, -1, -15, -10, -2, -10, -4, 2, -3, 0, 3, 0, -2, -1, -2, 0, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1165 */
++static const signed char a3_da_ctbl47nit_old[30] = {0, 0, 0, -3, 4, -1, -23, -3, -19, -18, -2, -16, -3, 4, -4, -4, 1, -3, 0, 3, 0, -2, -1, -2, 0, -1, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1166 */
++static const signed char a3_da_ctbl50nit_old[30] = {0, 0, 0, -3, 4, -1, -22, -2, -19, -12, 4, -11, -3, 3, -4, -5, 1, -4, 0, 2, 0, -1, -1, -1, -1, -2, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1167 */
++static const signed char a3_da_ctbl53nit_old[30] = {0, 0, 0, -3, 4, -1, -23, -3, -20, -12, 3, -11, -4, 2, -5, -5, 0, -4, 0, 2, 0, -2, -2, -2, -2, -2, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1168 */
++static const signed char a3_da_ctbl56nit_old[30] = {0, 0, 0, -1, 2, 0, -18, 3, -15, -11, 3, -11, -7, -2, -6, -1, 3, -1, -1, 1, -1, -1, -1, -1, -2, -2, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1169 */
++static const signed char a3_da_ctbl60nit_old[30] = {0, 0, 0, -4, 1, -2, -24, -2, -19, -13, -1, -12, -1, 3, -1, -1, 2, -1, 0, 2, 0, -1, -1, -1, -2, -2, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1170 */
++static const signed char a3_da_ctbl64nit_old[30] = {0, 0, 0, -2, 2, -1, -24, -2, -19, -14, -3, -12, -1, 3, -1, -2, 1, -2, -1, 1, 0, 0, 0, 0, -2, -2, -2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1171 */
++static const signed char a3_da_ctbl68nit_old[30] = {0, 0, 0, 1, 3, 1, -18, 4, -15, -9, 3, -9, -2, 0, -4, -2, 2, 0, -3, -2, -2, 0, 0, 0, -2, -2, -2, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1172 */
++static const signed char a3_da_ctbl72nit_old[30] = {0, 0, 0, 0, 2, -1, -18, 4, -16, -6, 3, -6, -2, 3, -2, -6, -2, -4, -1, 0, -1, 0, 0, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1173 */
++static const signed char a3_da_ctbl77nit_old[30] = {0, 0, 0, -4, 1, -2, -17, 4, -14, -10, 0, -10, -2, 1, -3, -6, -2, -4, -3, -2, -1, -1, 0, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1174 */
++static const signed char a3_da_ctbl82nit_old[30] = {0, 0, 0, -1, 2, -1, -24, 0, -21, -3, 4, -3, -5, -1, -4, -6, -1, -4, -4, -3, -2, 2, 1, 0, -1, -1, -1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1175 */
++static const signed char a3_da_ctbl87nit_old[30] = {0, 0, 0, -2, 3, -2, -26, -2, -22, -12, -2, -12, -5, -2, -4, -5, -1, -3, -3, -3, -2, 2, 1, 0, -1, -1, -1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1176 */
++static const signed char a3_da_ctbl93nit_old[30] = {0, 0, 0, -4, 1, -3, -18, 6, -16, -5, 0, -8, -7, -3, -5, -7, -2, -4, -2, -1, -1, 0, 0, 1, -1, -1, -1, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1177 */
++static const signed char a3_da_ctbl98nit_old[30] = {0, 0, 0, -6, 0, -5, -18, 4, -15, -6, 0, -6, -4, -1, -3, -5, -1, -2, -1, -1, -1, -1, -1, -1, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1178 */
++static const signed char a3_da_ctbl105nit_old[30] = {0, 0, 0, -8, -1, -6, -17, 4, -16, 0, 4, -4, -7, -4, -6, -5, -1, -2, -1, 0, 0, -1, -1, -1, 0, 0, 0, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1179 */
++static const signed char a3_da_ctbl111nit_old[30] = {0, 0, 0, -8, -1, -7, -20, 2, -17, -3, 1, -5, -6, -2, -5, -5, 0, -2, 1, 1, 1, 1, 0, 0, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1180 */
++static const signed char a3_da_ctbl119nit_old[30] = {0, 0, 0, -5, 0, -4, -18, 4, -16, -2, 0, -5, -2, 1, -2, -5, 0, -2, 1, 1, 1, -1, -1, 0, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1181 */
++static const signed char a3_da_ctbl126nit_old[30] = {0, 0, 0, -8, -1, -6, -22, -2, -20, -3, 2, -3, 0, 3, 1, -1, 0, -2, -1, 0, -1, -1, -1, -1, 1, 1, 1, -1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1182 */
++static const signed char a3_da_ctbl134nit_old[30] = {0, 0, 0, -10, -2, -8, -22, -1, -19, 0, 2, -3, -6, -2, -4, -1, 3, 1, 0, 0, 0, 1, 0, 0, 1, 2, 1, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1183 */
++static const signed char a3_da_ctbl143nit_old[30] = {0, 0, 0, -9, -1, -6, -22, 0, -17, -7, -2, -9, -4, 0, -2, 0, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 2, 0, 0, 1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1184 */
++static const signed char a3_da_ctbl152nit_old[30] = {0, 0, 0, -9, -2, -7, -22, 0, -19, -5, 0, -3, -4, -2, -3, -1, 1, -1, 2, 2, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1185 */
++static const signed char a3_da_ctbl162nit_old[30] = {0, 0, 0, -9, -2, -8, -12, 4, -11, -1, 2, -1, -6, -3, -4, -1, 2, 0, 1, 2, 2, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1186 */
++static const signed char a3_da_ctbl172nit_old[30] = {0, 0, 0, -2, 1, -2, -26, -4, -23, -2, -2, -2, 2, 3, 1, -1, 3, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1187 */
++static const signed char a3_da_ctbl183nit_old[30] = {0, 0, 0, -3, 2, -3, -16, 1, -14, -1, -2, -2, 1, 3, 0, -1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1188 */
++static const signed char a3_da_ctbl195nit_old[30] = {0, 0, 0, -3, 2, -3, -18, -1, -15, -3, -3, -3, -1, 0, -1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1189 */
++static const signed char a3_da_ctbl207nit_old[30] = {0, 0, 0, -2, 2, -3, -13, -1, -12, 3, 2, 1, -1, 0, -1, -1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1190 */
++static const signed char a3_da_ctbl220nit_old[30] = {0, 0, 0, -2, 2, -3, -14, -3, -13, 3, 2, 2, -1, 0, -1, -1, 1, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1191 */
++static const signed char a3_da_ctbl234nit_old[30] = {0, 0, 0, -4, 2, -4, -12, 1, -10, 1, 0, 1, -3, -2, -2, -2, -1, -2, 2, 1, 1, 1, 1, 1, 1, 1, 1, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1192 */
++static const signed char a3_da_ctbl249nit_old[30] = {0, 0, 0, -5, 1, -5, -12, -1, -11, 4, 4, 4, -3, -3, -3, -2, -1, -2, 0, 1, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1193 */
++static const signed char a3_da_ctbl265nit_old[30] = {0, 0, 0, -14, -5, -12, -4, 4, -5, 4, 4, 3, 0, 0, 0, -2, -1, -1, 0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1194 */
++static const signed char a3_da_ctbl282nit_old[30] = {0, 0, 0, -14, -6, -12, -5, 1, -6, 6, 4, 5, 1, 2, 1, -2, -1, -2, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1195 */
++static const signed char a3_da_ctbl300nit_old[30] = {0, 0, 0, -6, -1, -6, -8, 0, -8, 3, 2, 1, -1, 1, 0, -1, -1, -1, 1, 1, 1, 2, 1, 1, 0, 1, 1, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1196 */
++static const signed char a3_da_ctbl316nit_old[30] = {0, 0, 0, -12, -2, -10, -9, -1, -8, 4, 4, 3, -1, 0, 0, -1, 0, -1, 0, 0, 1, 2, 2, 1, 0, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1197 */
++static const signed char a3_da_ctbl333nit_old[30] = {0, 0, 0, -13, -3, -11, -4, 3, -4, -1, -1, 0, 1, 2, 1, -2, 0, 0, 1, 0, 0, 1, 2, 2, 0, 0, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1198 */
++static const signed char a3_da_ctbl350nit_old[30] = {0, 0, 0, -14, -4, -11, -4, 2, -4, 2, 2, 2, -1, 0, 1, 0, 0, -1, 0, 0, 0, 3, 2, 2, 0, 1, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1199 */
++static const signed char a3_da_ctbl357nit_old[30] = {0, 0, 0, -14, -4, -11, -3, 3, -3, 2, 2, 2, -1, 0, 1, 0, 0, -1, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1200 */
++static const signed char a3_da_ctbl365nit_old[30] = {0, 0, 0, -14, -4, -11, -4, 2, -4, 2, 2, 2, -1, 0, 1, 0, 0, -1, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1201 */
++static const signed char a3_da_ctbl372nit_old[30] = {0, 0, 0, -14, -4, -11, -5, 1, -4, 3, 2, 2, -1, 0, 0, -1, -1, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1202 */
++static const signed char a3_da_ctbl380nit_old[30] = {0, 0, 0, -15, -5, -13, -4, 1, -4, 3, 2, 3, -1, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1203 */
++static const signed char a3_da_ctbl387nit_old[30] = {0, 0, 0, -15, -5, -12, -3, 1, -4, 1, 1, 2, 0, 0, 1, 0, 0, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1204 */
++static const signed char a3_da_ctbl395nit_old[30] = {0, 0, 0, -15, -5, -12, -3, 1, -4, 1, 1, 2, 0, 0, 1, 0, 0, -1, 1, 1, 1, 3, 3, 3, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1205 */
++static const signed char a3_da_ctbl403nit_old[30] = {0, 0, 0, -4, 1, -4, -8, -1, -7, -3, -3, -2, 1, 3, 2, 1, 0, 0, 0, 0, 0, 1, 1, 1, -1, 0, 1, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1206 */
++static const signed char a3_da_ctbl412nit_old[30] = {0, 0, 0, -5, 0, -5, -7, -1, -6, 0, 0, 0, -2, -1, -1, -1, -1, 0, 2, 0, 1, 2, 2, 1, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1207 */
++static const signed char a3_da_ctbl420nit_old[30] = {0, 0, 0, -5, 0, -5, -7, -1, -6, 0, -1, -1, 0, 2, 2, -1, -1, -2, 1, 0, 0, 2, 2, 2, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1208 */
++static const signed char a3_da_ctbl443nit_old[30] = {0, 0, 0, -6, -1, -6, -7, -3, -6, 3, 2, 3, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 2, 1, -1, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1209 */
++static const signed char a3_da_ctbl465nit_old[30] = {0, 0, 0, -5, -1, -5, -3, 1, -3, -3, -3, -2, 2, 1, 1, -1, -1, -1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1210 */
++static const signed char a3_da_ctbl488nit_old[30] = {0, 0, 0, -8, -3, -7, -3, -1, -3, 2, 2, 1, -1, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1211 */
++static const signed char a3_da_ctbl510nit_old[30] = {0, 0, 0, -7, -3, -6, 2, 4, 1, 0, -1, 1, -2, -1, -1, -1, -1, -1, 2, 1, 2, 0, 0, 0, -1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1212 */
++static const signed char a3_da_ctbl533nit_old[30] = {0, 0, 0, -6, -3, -5, 2, 2, 1, 0, -1, 1, 0, 2, 1, -1, -2, -1, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1213 */
++static const signed char a3_da_ctbl555nit_old[30] = {0, 0, 0, 0, 1, -1, -3, -2, -2, 3, 2, 2, 0, 2, 1, 0, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1214 */
++static const signed char a3_da_ctbl578nit_old[30] = {0, 0, 0, 0, 1, 0, 0, 1, 0, -1, -1, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, -1, 0, -1};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1215 */
++static const signed char a3_da_ctbl600nit_old[30] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++
++/* s6e36w4x01_l_dimming_noblesse.c:1218 */
++static const struct SmtDimInfo s6e36w4x01_dimming_info_old[MAX_BR_INFO] = {
++	{.br = 10, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl10nit_old, .cTbl = a3_da_ctbl10nit_old, .way = W1},
++	{.br = 11, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl11nit_old, .cTbl = a3_da_ctbl11nit_old, .way = W1},
++	{.br = 12, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl12nit_old, .cTbl = a3_da_ctbl12nit_old, .way = W1},
++	{.br = 13, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl13nit_old, .cTbl = a3_da_ctbl13nit_old, .way = W1},
++	{.br = 14, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl14nit_old, .cTbl = a3_da_ctbl14nit_old, .way = W1},
++	{.br = 15, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl15nit_old, .cTbl = a3_da_ctbl15nit_old, .way = W1},
++	{.br = 16, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl16nit_old, .cTbl = a3_da_ctbl16nit_old, .way = W1},
++	{.br = 17, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl17nit_old, .cTbl = a3_da_ctbl17nit_old, .way = W1},
++	{.br = 19, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl19nit_old, .cTbl = a3_da_ctbl19nit_old, .way = W1},
++	{.br = 20, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl20nit_old, .cTbl = a3_da_ctbl20nit_old, .way = W1},
++	{.br = 21, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl21nit_old, .cTbl = a3_da_ctbl21nit_old, .way = W1},
++	{.br = 22, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl22nit_old, .cTbl = a3_da_ctbl22nit_old, .way = W1},
++	{.br = 24, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl24nit_old, .cTbl = a3_da_ctbl24nit_old, .way = W1},
++	{.br = 25, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl25nit_old, .cTbl = a3_da_ctbl25nit_old, .way = W1},
++	{.br = 27, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl27nit_old, .cTbl = a3_da_ctbl27nit_old, .way = W1},
++	{.br = 29, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl29nit_old, .cTbl = a3_da_ctbl29nit_old, .way = W1},
++	{.br = 30, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl30nit_old, .cTbl = a3_da_ctbl30nit_old, .way = W1},
++	{.br = 32, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl32nit_old, .cTbl = a3_da_ctbl32nit_old, .way = W1},
++	{.br = 34, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl34nit_old, .cTbl = a3_da_ctbl34nit_old, .way = W1},
++	{.br = 37, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl37nit_old, .cTbl = a3_da_ctbl37nit_old, .way = W1},
++	{.br = 39, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl39nit_old, .cTbl = a3_da_ctbl39nit_old, .way = W1},
++	{.br = 41, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl41nit_old, .cTbl = a3_da_ctbl41nit_old, .way = W1},
++	{.br = 44, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl44nit_old, .cTbl = a3_da_ctbl44nit_old, .way = W1},
++	{.br = 47, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl47nit_old, .cTbl = a3_da_ctbl47nit_old, .way = W1},
++	{.br = 50, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl50nit_old, .cTbl = a3_da_ctbl50nit_old, .way = W1},
++	{.br = 53, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl53nit_old, .cTbl = a3_da_ctbl53nit_old, .way = W1},
++	{.br = 56, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl56nit_old, .cTbl = a3_da_ctbl56nit_old, .way = W1},
++	{.br = 60, .refBr = 106, .cGma = gma2p15, .rTbl = a3_da_rtbl60nit_old, .cTbl = a3_da_ctbl60nit_old, .way = W1},
++	{.br = 64, .refBr = 107, .cGma = gma2p15, .rTbl = a3_da_rtbl64nit_old, .cTbl = a3_da_ctbl64nit_old, .way = W1},
++	{.br = 68, .refBr = 114, .cGma = gma2p15, .rTbl = a3_da_rtbl68nit_old, .cTbl = a3_da_ctbl68nit_old, .way = W1},
++	{.br = 72, .refBr = 119, .cGma = gma2p15, .rTbl = a3_da_rtbl72nit_old, .cTbl = a3_da_ctbl72nit_old, .way = W1},
++	{.br = 77, .refBr = 127, .cGma = gma2p15, .rTbl = a3_da_rtbl77nit_old, .cTbl = a3_da_ctbl77nit_old, .way = W1},
++	{.br = 82, .refBr = 135, .cGma = gma2p15, .rTbl = a3_da_rtbl82nit_old, .cTbl = a3_da_ctbl82nit_old, .way = W1},
++	{.br = 87, .refBr = 143, .cGma = gma2p15, .rTbl = a3_da_rtbl87nit_old, .cTbl = a3_da_ctbl87nit_old, .way = W1},
++	{.br = 93, .refBr = 150, .cGma = gma2p15, .rTbl = a3_da_rtbl93nit_old, .cTbl = a3_da_ctbl93nit_old, .way = W1},
++	{.br = 98, .refBr = 158, .cGma = gma2p15, .rTbl = a3_da_rtbl98nit_old, .cTbl = a3_da_ctbl98nit_old, .way = W1},
++	{.br = 105, .refBr = 169, .cGma = gma2p15, .rTbl = a3_da_rtbl105nit_old, .cTbl = a3_da_ctbl105nit_old, .way = W1},
++	{.br = 111, .refBr = 177, .cGma = gma2p15, .rTbl = a3_da_rtbl111nit_old, .cTbl = a3_da_ctbl111nit_old, .way = W1},
++	{.br = 119, .refBr = 187, .cGma = gma2p15, .rTbl = a3_da_rtbl119nit_old, .cTbl = a3_da_ctbl119nit_old, .way = W1},
++	{.br = 126, .refBr = 199, .cGma = gma2p15, .rTbl = a3_da_rtbl126nit_old, .cTbl = a3_da_ctbl126nit_old, .way = W1},
++	{.br = 134, .refBr = 208, .cGma = gma2p15, .rTbl = a3_da_rtbl134nit_old, .cTbl = a3_da_ctbl134nit_old, .way = W1},
++	{.br = 143, .refBr = 222, .cGma = gma2p15, .rTbl = a3_da_rtbl143nit_old, .cTbl = a3_da_ctbl143nit_old, .way = W1},
++	{.br = 152, .refBr = 237, .cGma = gma2p15, .rTbl = a3_da_rtbl152nit_old, .cTbl = a3_da_ctbl152nit_old, .way = W1},
++	{.br = 162, .refBr = 253, .cGma = gma2p15, .rTbl = a3_da_rtbl162nit_old, .cTbl = a3_da_ctbl162nit_old, .way = W1},
++	{.br = 172, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl172nit_old, .cTbl = a3_da_ctbl172nit_old, .way = W1},
++	{.br = 183, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl183nit_old, .cTbl = a3_da_ctbl183nit_old, .way = W1},
++	{.br = 195, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl195nit_old, .cTbl = a3_da_ctbl195nit_old, .way = W1},
++	{.br = 207, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl207nit_old, .cTbl = a3_da_ctbl207nit_old, .way = W1},
++	{.br = 220, .refBr = 264, .cGma = gma2p15, .rTbl = a3_da_rtbl220nit_old, .cTbl = a3_da_ctbl220nit_old, .way = W1},
++	{.br = 234, .refBr = 269, .cGma = gma2p15, .rTbl = a3_da_rtbl234nit_old, .cTbl = a3_da_ctbl234nit_old, .way = W1},
++	{.br = 249, .refBr = 286, .cGma = gma2p15, .rTbl = a3_da_rtbl249nit_old, .cTbl = a3_da_ctbl249nit_old, .way = W1},
++	{.br = 265, .refBr = 301, .cGma = gma2p15, .rTbl = a3_da_rtbl265nit_old, .cTbl = a3_da_ctbl265nit_old, .way = W1},
++	{.br = 282, .refBr = 321, .cGma = gma2p15, .rTbl = a3_da_rtbl282nit_old, .cTbl = a3_da_ctbl282nit_old, .way = W1},
++	{.br = 300, .refBr = 339, .cGma = gma2p15, .rTbl = a3_da_rtbl300nit_old, .cTbl = a3_da_ctbl300nit_old, .way = W1},
++	{.br = 316, .refBr = 354, .cGma = gma2p15, .rTbl = a3_da_rtbl316nit_old, .cTbl = a3_da_ctbl316nit_old, .way = W1},
++	{.br = 333, .refBr = 370, .cGma = gma2p15, .rTbl = a3_da_rtbl333nit_old, .cTbl = a3_da_ctbl333nit_old, .way = W1},
++	{.br = 350, .refBr = 388, .cGma = gma2p15, .rTbl = a3_da_rtbl350nit_old, .cTbl = a3_da_ctbl350nit_old, .way = W1},
++	{.br = 357, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl357nit_old, .cTbl = a3_da_ctbl357nit_old, .way = W1},
++	{.br = 365, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl365nit_old, .cTbl = a3_da_ctbl365nit_old, .way = W1},
++	{.br = 372, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl372nit_old, .cTbl = a3_da_ctbl372nit_old, .way = W1},
++	{.br = 380, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl380nit_old, .cTbl = a3_da_ctbl380nit_old, .way = W1},
++	{.br = 387, .refBr = 393, .cGma = gma2p15, .rTbl = a3_da_rtbl387nit_old, .cTbl = a3_da_ctbl387nit_old, .way = W1},
++	{.br = 395, .refBr = 395, .cGma = gma2p15, .rTbl = a3_da_rtbl395nit_old, .cTbl = a3_da_ctbl395nit_old, .way = W1},
++	{.br = 403, .refBr = 402, .cGma = gma2p15, .rTbl = a3_da_rtbl403nit_old, .cTbl = a3_da_ctbl403nit_old, .way = W1},
++	{.br = 412, .refBr = 412, .cGma = gma2p15, .rTbl = a3_da_rtbl412nit_old, .cTbl = a3_da_ctbl412nit_old, .way = W1},
++	{.br = 420, .refBr = 420, .cGma = gma2p15, .rTbl = a3_da_rtbl420nit_old, .cTbl = a3_da_ctbl420nit_old, .way = W1},
++	{.br = 443, .refBr = 442, .cGma = gma2p15, .rTbl = a3_da_rtbl443nit_old, .cTbl = a3_da_ctbl443nit_old, .way = W1},
++	{.br = 465, .refBr = 463, .cGma = gma2p15, .rTbl = a3_da_rtbl465nit_old, .cTbl = a3_da_ctbl465nit_old, .way = W1},
++	{.br = 488, .refBr = 485, .cGma = gma2p15, .rTbl = a3_da_rtbl488nit_old, .cTbl = a3_da_ctbl488nit_old, .way = W1},
++	{.br = 510, .refBr = 507, .cGma = gma2p15, .rTbl = a3_da_rtbl510nit_old, .cTbl = a3_da_ctbl510nit_old, .way = W1},
++	{.br = 533, .refBr = 532, .cGma = gma2p15, .rTbl = a3_da_rtbl533nit_old, .cTbl = a3_da_ctbl533nit_old, .way = W1},
++	{.br = 555, .refBr = 552, .cGma = gma2p15, .rTbl = a3_da_rtbl555nit_old, .cTbl = a3_da_ctbl555nit_old, .way = W1},
++	{.br = 578, .refBr = 575, .cGma = gma2p15, .rTbl = a3_da_rtbl578nit_old, .cTbl = a3_da_ctbl578nit_old, .way = W1},
++	{.br = 600, .refBr = 600, .cGma = gma2p20, .rTbl = a3_da_rtbl600nit_old, .cTbl = a3_da_ctbl600nit_old, .way = W1},
++};
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming.c
+@@ -0,0 +1,164 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Samsung SDC large-panel math/tables, isolated for offline review.
++ * Original formulas Copyright Samsung Electronics; see evidence and COPYING. */
++#include "noblesse-dimming.h"
++#ifdef __KERNEL__
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#define ND_ALLOC(n) kzalloc(n, GFP_KERNEL)
++#define ND_FREE(p) kfree(p)
++#else
++#include <errno.h>
++#include <stdlib.h>
++#include <string.h>
++#define ND_ALLOC(n) calloc(1, n)
++#define ND_FREE(p) free(p)
++#endif
++#define pr_err(...) ((void)0)
++#define printk(...) ((void)0)
++#include "noblesse-dimming-internal.h"
++#include "noblesse-dimming-tables.inc"
++#include "noblesse-dimming-math.inc"
++
++/* math uses unsigned long products; ARM64 and the x86_64 host are both LP64. */
++typedef char nd_requires_64bit_long[sizeof(unsigned long) == 8 ? 1 : -1];
++struct nd_context {
++	struct dim_data workspace;
++	np_u8 gamma[MAX_BR_INFO][GAMMA_CMD_CNT];
++	np_u8 id3, base_vbias;
++};
++
++int nd_create(const struct nd_input *in, struct nd_context **out)
++{
++	struct nd_context *ctx;
++	struct dim_data *data;
++	const struct SmtDimInfo *info;
++	struct SmtDimInfo row;
++	const np_u8 *mtp;
++	int i, j, pos = 0, temp, ret;
++	bool zero = true, ones = true;
++	if (!out) return -EINVAL;
++	*out = NULL;
++	if (!in || !in->mtp || in->mtp_len != 34) return -EINVAL;
++	if (!in->large_panel_verified || !in->id_read_ok || in->id[0] != 0x40)
++		return -ENODEV;
++	if (!in->mtp_read_ok || !in->vbias_read_ok) return -ENODATA;
++	mtp = in->mtp;
++	for (i = 0; i < 34; i++) {
++		if (mtp[i] != 0) zero = false;
++		if (mtp[i] != 255) ones = false;
++	}
++	/* Conservative audit policy: do not silently substitute source defaults. */
++	if (zero || ones) return -ENODATA;
++	ctx = ND_ALLOC(sizeof(*ctx));
++	if (!ctx) return -ENOMEM;
++	ctx->id3 = in->id[2];
++	ctx->base_vbias = in->base_vbias;
++	data = &ctx->workspace;
++#include "noblesse-dimming-decode.inc"
++	if ((ctx->id3 & 15) >= 4) info = s6e36w4x01_dimming_info_latest;
++	else if ((ctx->id3 & 15) >= 3) info = s6e36w4x01_dimming_info_0x83;
++	else info = s6e36w4x01_dimming_info_old;
++	ret = s6e36w4x01_generate_volt_table(data);
++	if (ret) goto fail;
++	for (i = 0; i < MAX_BR_INFO; i++) {
++		row = info[i]; /* Never cast away const or modify Samsung metadata. */
++		if (row.way != DIMMING_METHOD_AID) { ret = -EOPNOTSUPP; goto fail; }
++		ret = s6e36w4x01_cal_gamma_from_index(data, &row);
++		if (ret) goto fail;
++		memcpy(ctx->gamma[i], row.gamma, GAMMA_CMD_CNT);
++	}
++	memcpy(ctx->gamma[73], MAX_GAMMA_SET, GAMMA_CMD_CNT);
++	*out = ctx;
++	return 0;
++fail:
++	ND_FREE(ctx);
++	return ret;
++}
++
++void nd_destroy(struct nd_context *ctx) { ND_FREE(ctx); }
++
++int nd_prepare(const struct nd_context *ctx, unsigned int brightness,
++	       bool hop, np_u8 temperature, struct nd_frame *out)
++{
++	struct nd_frame frame;
++	const unsigned char *aid, *vint = NULL;
++	const signed char *vbias;
++	unsigned int rev, level;
++	int bias;
++	static const np_u8 base[] = { 0xba, 0x21, 0x02, 0x32, 0x50, 0xcc, 0x1e, 0x1e, 0x00 };
++	if (!out) return -EINVAL;
++	memset(out, 0, sizeof(*out));
++	if (!ctx || brightness > 100) return -EINVAL;
++	memset(&frame, 0, sizeof(frame));
++	level = s6e36w4x01_br_tbl[brightness];
++	if (level >= MAX_BR_INFO) return -ERANGE;
++	rev = ctx->id3 & 15;
++	if (rev >= 4) {
++		aid = s6e36w4x01_aid_latest;
++		vbias = s6e36w4x01_vbias_30hz_latest;
++		vint = s6e36w4x01_vint_latest;
++	} else if (rev >= 3) {
++		aid = s6e36w4x01_aid_0x83;
++		vbias = s6e36w4x01_vbias_30hz_0x83;
++		vint = s6e36w4x01_vint_0x83;
++	} else {
++		aid = s6e36w4x01_aid;
++		vbias = s6e36w4x01_vbias;
++	}
++	bias = (int)ctx->base_vbias + vbias[level];
++	if (bias < 0 || bias > 255) return -ERANGE;
++	memcpy(frame.cal.gamma, ctx->gamma[level], 35);
++	frame.cal.aid[0] = 0xb1;
++	frame.cal.aid[1] = aid[level * 2];
++	frame.cal.aid[2] = aid[level * 2 + 1];
++	frame.cal.elvss[0] = 0xb5;
++	frame.cal.elvss[1] = temperature;
++	frame.cal.elvss[2] = s6e36w4x01_mps_con[level];
++	frame.cal.elvss[3] = s6e36w4x01_elvss[level];
++	memcpy(frame.cal.vbias, base, sizeof(base));
++	frame.cal.vbias[1] = hop ? 0x21 : 0x20;
++	frame.cal.vbias[8] = (np_u8)bias;
++	frame.has_vint = rev >= 3;
++	if (frame.has_vint) {
++		frame.vint[0] = 0xf4;
++		frame.vint[1] = vint[level];
++	}
++	frame.id3 = ctx->id3;
++	frame.level = level;
++	frame.cal.ready = true; /* Publish only fully validated frame. */
++	*out = frame;
++	return 0;
++}
++
++int nd_send(const struct nd_frame *f, const struct np_io *io)
++{
++	int ret, cleanup;
++	if (!f || !io || !io->write) return -EINVAL;
++	if (!f->cal.ready) return -ENODATA;
++	if (f->level >= MAX_BR_INFO || f->cal.gamma[0] != 0xca ||
++	    f->cal.aid[0] != 0xb1 || f->cal.elvss[0] != 0xb5 ||
++	    f->cal.vbias[0] != 0xba || f->has_vint != ((f->id3 & 15) >= 3) ||
++	    (f->has_vint && f->vint[0] != 0xf4)) return -EINVAL;
++#define WRITE(type, bytes, n) do { \
++	ret = io->write(io->cookie, type, bytes, n); if (ret < 0) goto finish; \
++} while (0)
++#define LONG(bytes) WRITE(NP_LONG, bytes, sizeof(bytes))
++	LONG(TEST_KEY_ON_0);
++	LONG(f->cal.gamma);
++	LONG(f->cal.aid);
++	LONG(f->cal.elvss);
++	if (f->has_vint) {
++		LONG(F4_GPARA);
++		WRITE(NP_SHORT_PARAM, f->vint, 2);
++	}
++	LONG(f->cal.vbias);
++	WRITE(NP_SHORT_PARAM, PANEL_UPDATE, 2);
++	ret = 0;
++finish:
++	cleanup = io->write(io->cookie, NP_LONG, TEST_KEY_OFF_0, sizeof(TEST_KEY_OFF_0));
++	return ret < 0 ? ret : (cleanup < 0 ? cleanup : 0);
++#undef LONG
++#undef WRITE
++}
+--- /dev/null
++++ b/drivers/video/fbdev/exynos/dpu30/panels/noblesse-dimming.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef NOBLESSE_DIMMING_H
++#define NOBLESSE_DIMMING_H
++#include "noblesse-panel-seq.h"
++struct nd_context;
++struct nd_input {
++	/* Caller assertions after independent successful reads; no hardware reader here.
++	 * ID[0] 0x40 establishes SDC vendor only, not large-panel geometry. */
++	bool large_panel_verified, id_read_ok, mtp_read_ok, vbias_read_ok;
++	np_u8 id[3], base_vbias;
++	const np_u8 *mtp;
++	size_t mtp_len; /* Exactly the first 34 bytes of the stock 46-byte C8 read. */
++};
++struct nd_frame {
++	struct np_sdc_cal cal;
++	bool has_vint;
++	np_u8 vint[2], id3;
++	unsigned int level; /* 0..73, not Android's 0..255 brightness. */
++};
++/* All allocations are per-instance. Failure leaves *out NULL.
++ * No fallback calibration, no DSI, GPIO, regulator or backlight registration. */
++int nd_create(const struct nd_input *, struct nd_context **out);
++void nd_destroy(struct nd_context *);
++/* temperature_byte is the stock ELVSS byte already computed by a future caller.
++ * This API does NOT implement temperature measurement or compensation policy. */
++int nd_prepare(const struct nd_context *, unsigned int brightness_0_100,
++	       bool enable_hop, np_u8 temperature_byte, struct nd_frame *out);
++/* Optional explicit packet dispatcher for mock tests / future locked transport.
++ * Not called or registered by this package. After any error, tries key-off;
++ * preserves first error. No assertion of panel rollback or persistent semantics. */
++int nd_send(const struct nd_frame *, const struct np_io *);
++#endif
