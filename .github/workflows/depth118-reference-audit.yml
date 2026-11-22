@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/depth118-reference-audit.yml'
       - 'docs/depth118-sm-r800-vs-sm-r840.md'
+      - 'ci/binder-adaptation/compare-kernel-configs.py'
   workflow_dispatch:
 
 permissions:
@@ -63,6 +64,23 @@ jobs:
           print("PASS: R800 source-level reference audit only")
           print("NOT VERIFIED: SM-R840 compatibility, Android servicemanager execution, hardware boot")
           PY
+      - name: Compare kernel configuration evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Target config must be an actual SM-R840 config, not the R800 reference.
+          # Do not fabricate values when no target config has been supplied.
+          target=ci/binder-adaptation/evidence/sm-r840.config
+          if test -s "$target"; then
+            python3 ci/binder-adaptation/compare-kernel-configs.py \
+              --reference reference-evidence/r800.config --target "$target" \
+              --output reference-evidence/kernel-compatibility.json
+          else
+            python3 ci/binder-adaptation/compare-kernel-configs.py \
+              --reference reference-evidence/r800.config \
+              --output reference-evidence/kernel-compatibility.json
+            echo 'SM-R840 kernel config not supplied; target compatibility UNKNOWN' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload source provenance
         if: always()
         uses: actions/upload-artifact@v4
