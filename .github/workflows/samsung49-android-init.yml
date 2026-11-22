@@ -1,7 +1,7 @@
 name: Samsung 4.9 Android 11 ARM64 init integration
 on:
   push:
-    branches: [test/samsung49-android-init]
+    branches: [test/samsung49-android-init, test/binder-android11-adaptation]
     paths: ['ci/samsung-virt/**', 'ci/arm64-reference/**', '.github/workflows/samsung49-android-init.yml']
 permissions:
   contents: read
@@ -20,7 +20,11 @@ jobs:
       - name: Compile Samsung 4.9 integration kernel
         run: |
           mkdir -p samsung-virt-evidence
-          ANDROID_INIT_FRAGMENT="$GITHUB_WORKSPACE/ci/samsung-virt/android-init.config"             bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
+          set -o pipefail
+          ANDROID_INIT_FRAGMENT="$GITHUB_WORKSPACE/ci/samsung-virt/android-init.config" \
+          BINDER_STAGE1_PATCH="$GITHUB_WORKSPACE/ci/binder-adaptation/context-manager-stage1.patch" \
+          BINDER_STAGE2_SCRIPT="$GITHUB_WORKSPACE/ci/binder-adaptation/apply-stage2.py" \
+            bash ci/samsung-virt/run.sh 2>&1 | tee samsung-virt-evidence/runner.log
         shell: bash
       - name: Attempt Android 11 ARM64 init once
         run: |
