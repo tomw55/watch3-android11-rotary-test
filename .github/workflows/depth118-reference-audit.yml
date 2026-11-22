@@ -1,0 +1,72 @@
+name: Depth118 reference compatibility audit
+
+on:
+  push:
+    branches: [test/binder-android11-adaptation]
+    paths:
+      - '.github/workflows/depth118-reference-audit.yml'
+      - 'docs/depth118-sm-r800-vs-sm-r840.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reference-source-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch reference sources and record provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reference-evidence
+          curl -fLsS --retry 3 --connect-timeout 15 \
+            https://raw.githubusercontent.com/Depth118/galaxy-watch-wearos/main/src/kernel/r800.config \
+            -o reference-evidence/r800.config
+          curl -fLsS --retry 3 --connect-timeout 15 \
+            https://raw.githubusercontent.com/Depth118/galaxy-watch-wearos/main/src/kernel/r800-wearos.patch \
+            -o reference-evidence/r800-wearos.patch
+          curl -fLsS --retry 3 --connect-timeout 15 \
+            https://raw.githubusercontent.com/Depth118/galaxy-watch-wearos/main/payload/start.sh \
+            -o reference-evidence/start.sh
+          curl -fLsS --retry 3 --connect-timeout 15 \
+            https://api.github.com/repos/Depth118/galaxy-watch-wearos/commits/main \
+            -o reference-evidence/upstream-commit.json
+          sha256sum reference-evidence/{r800.config,r800-wearos.patch,start.sh} \
+            > reference-evidence/sha256sums.txt
+      - name: Verify reference architecture (not execution)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          config = Path("reference-evidence/r800.config").read_text()
+          patch = Path("reference-evidence/r800-wearos.patch").read_text()
+          startup = Path("reference-evidence/start.sh").read_text()
+          required = {
+              "CONFIG_ANDROID_BINDER_IPC=y",
+              'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"',
+              "CONFIG_ASHMEM=y",
+              "CONFIG_MEMFD_CREATE=y",
+              "CONFIG_SECURITY_SELINUX=y",
+              "CONFIG_SECCOMP_FILTER=y",
+              "CONFIG_NAMESPACES=y",
+              "CONFIG_INPUT_TIZEN_DETENT=y",
+          }
+          for option in sorted(required):
+              assert option in config.splitlines(), f"Missing R800 reference option: {option}"
+              print("REFERENCE CONFIG:", option)
+          assert "REL_WHEEL" in patch, "R800 reference patch lacks rotary REL_WHEEL"
+          assert "switch_root /newroot /init" in startup, "R800 startup flow changed"
+          print("PASS: R800 source-level reference audit only")
+          print("NOT VERIFIED: SM-R840 compatibility, Android servicemanager execution, hardware boot")
+          PY
+      - name: Upload source provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: depth118-reference-source-evidence
+          path: reference-evidence/
+          if-no-files-found: warn
