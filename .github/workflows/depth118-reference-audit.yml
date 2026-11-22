@@ -15,7 +15,9 @@ permissions:
 jobs:
   reference-source-audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 20
+    env:
+      KERNEL_SRC_URL: ${{ vars.KERNEL_SRC_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: Fetch reference sources and record provenance
@@ -64,13 +66,47 @@ jobs:
           print("PASS: R800 source-level reference audit only")
           print("NOT VERIFIED: SM-R840 compatibility, Android servicemanager execution, hardware boot")
           PY
+      - name: Resolve authentic SM-R840 Noblesse configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reference-evidence
+          if [ -z "${KERNEL_SRC_URL:-}" ]; then
+            echo 'SM-R840 source URL not configured; comparison remains UNKNOWN' | tee reference-evidence/target-config-status.txt
+            exit 0
+          fi
+          expected=1cb5b1a9a7024ac28366559324fac6d07a359af19b73c2fe392d838305e7be3f
+          curl -fLsS --retry 3 --connect-timeout 20 "$KERNEL_SRC_URL" -o "$RUNNER_TEMP/noblesse.zip"
+          actual=$(sha256sum "$RUNNER_TEMP/noblesse.zip" | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::SM-R840 kernel source SHA-256 mismatch"
+            exit 1
+          fi
+          echo "$actual  pinned-SM-R840-kernel-source.zip" > reference-evidence/target-source-sha256.txt
+          mkdir -p "$RUNNER_TEMP/noblesse-source"
+          unzip -q "$RUNNER_TEMP/noblesse.zip" -d "$RUNNER_TEMP/noblesse-source"
+          src=$(find "$RUNNER_TEMP/noblesse-source" -mindepth 1 -maxdepth 1 -type d -name 'kernel_samsung_galileo*' -print -quit)
+          test -n "$src"
+          cd "$src"
+          # Reproduce the board profile selection in scripts/build-kernel.sh,
+          # without compiling a kernel or creating a boot image.
+          rm -f scripts/basic/{fixdep,.fixdep.cmd} scripts/kconfig/{conf,conf.o,zconf.tab.o,.conf.cmd,.conf.o.cmd,.zconf.tab.o.cmd}
+          cat arch/arm64/configs/tizen_noblesse_large_defconfig \
+              arch/arm64/configs/tizen_noblesse_brcm_defconfig \
+              > arch/arm64/configs/tizen_noblesse_ci_variant_defconfig
+          make ARCH=arm64 tizen_noblesse_defconfig VARIANT_DEFCONFIG=tizen_noblesse_ci_variant_defconfig
+          grep -Fx 'CONFIG_NOBLESSE=y' .config
+          grep -Fx 'CONFIG_NOBLESSE_LARGE=y' .config
+          cp .config "$GITHUB_WORKSPACE/reference-evidence/sm-r840.config"
+          echo 'PASS: authentic SM-R840 source hash and resolved Noblesse config' \
+              | tee "$GITHUB_WORKSPACE/reference-evidence/target-config-status.txt"
       - name: Compare kernel configuration evidence
         shell: bash
         run: |
           set -euo pipefail
           # Target config must be an actual SM-R840 config, not the R800 reference.
           # Do not fabricate values when no target config has been supplied.
-          target=ci/binder-adaptation/evidence/sm-r840.config
+          target=reference-evidence/sm-r840.config
           if test -s "$target"; then
             python3 ci/binder-adaptation/compare-kernel-configs.py \
               --reference reference-evidence/r800.config --target "$target" \
